@@ -129,13 +129,5 @@ python integracion/aplicar_bonos.py
 
 1. En RRHH puede haber otros trabajadores y otros pagos, pero el script solo toca a quienes aparecen en ventas y pertenecen a `Caja`.
 2. El bono se escribe en el campo `bono_extra` del pago mensual.
-3. En ventas se guardan fechas completas por venta, y en RRHH el `periodo` tambien se guarda como fecha completa ISO del inicio del mes.
-4. Si el pago ya tiene exactamente ese bono aplicado, el script lo reporta como `ya aplicado`.
-5. `aplicar_bonos.py` no pide argumentos. Usa la fecha actual del sistema para calcular el periodo a procesar.
-6. La idea es programar el script en `Task Scheduler` para el dia 15 a las 03:00 AM.
-
-Ejemplo de registro en Windows:
-
-```powershell
-schtasks /Create /SC MONTHLY /D 15 /TN "IntegracionBonosVentasRRHH" /TR "C:\Users\User\PycharmProjects\ArquiTarea\.venv\Scripts\python.exe C:\Users\User\PycharmProjects\ArquiTarea\integracion\aplicar_bonos.py" /ST 03:00
-```
+3. `aplicar_bonos.py` no pide argumentos. Usa la fecha actual del sistema para calcular el periodo a procesar.
+4. La idea es programar el script en `Task Scheduler` para el dia 15 a las 03:00 AM.
