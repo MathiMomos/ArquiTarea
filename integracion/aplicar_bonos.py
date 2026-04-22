@@ -33,23 +33,7 @@ def connect_database(path: Path) -> Connection:
 
     connection = connect(path)
     connection.row_factory = Row
-    connection.execute("PRAGMA foreign_keys = ON")
     return connection
-
-
-def assert_required_tables(
-    connection: Connection,
-    database_name: str,
-    expected_tables: set[str],
-) -> None:
-    rows = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table'"
-    ).fetchall()
-    available_tables = {row["name"] for row in rows}
-    missing_tables = expected_tables - available_tables
-    if missing_tables:
-        missing_list = ", ".join(sorted(missing_tables))
-        raise RuntimeError(f"La base {database_name} no contiene las tablas requeridas: {missing_list}")
 
 
 def get_eligible_workers(
@@ -227,9 +211,6 @@ def main() -> None:
     period = current_period(executed_at)
 
     with connect_database(VENTAS_DB) as sales_connection, connect_database(RRHH_DB) as hr_connection:
-        assert_required_tables(sales_connection, "ventas.db", {"trabajadores", "ventas"})
-        assert_required_tables(hr_connection, "rrhh.db", {"trabajadores", "pagos"})
-
         try:
             result = apply_bonus(
                 sales_connection,
