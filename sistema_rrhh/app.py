@@ -25,6 +25,11 @@ def previous_month_period(reference: date | None = None) -> str:
     return previous_month_last_day.strftime("%Y-%m")
 
 
+def current_period(reference: date | None = None) -> str:
+    reference = reference or date.today()
+    return reference.strftime("%Y-%m")
+
+
 def validate_period(period: str) -> str:
     try:
         datetime.strptime(period, "%Y-%m")
@@ -33,15 +38,18 @@ def validate_period(period: str) -> str:
     return period
 
 
+def period_start_date(period: str) -> str:
+    year, month = map(int, period.split("-"))
+    return date(year, month, 1).isoformat()
+
+
 def payment_date_for_period(period: str) -> str:
     year, month = map(int, period.split("-"))
-    if month == 12:
-        payment_year = year + 1
-        payment_month = 1
-    else:
-        payment_year = year
-        payment_month = month + 1
-    return date(payment_year, payment_month, PAYMENT_DAY).isoformat()
+    return date(year, month, PAYMENT_DAY).isoformat()
+
+
+def payment_date_for_period_date(period_date: str) -> str:
+    return payment_date_for_period(period_date[:7])
 
 
 def connect() -> sqlite3.Connection:
@@ -78,7 +86,25 @@ def create_schema(connection: sqlite3.Connection) -> None:
         ON pagos(periodo, trabajador_codigo);
         """
     )
+    normalize_payment_periods(connection)
     connection.commit()
+
+
+def normalize_payment_periods(connection: sqlite3.Connection) -> None:
+    legacy_rows = connection.execute(
+        """
+        SELECT id, periodo, fecha_pago
+        FROM pagos
+        WHERE length(periodo) = 7 OR substr(fecha_pago, 1, 7) != substr(periodo, 1, 7)
+        """
+    ).fetchall()
+
+    for row in legacy_rows:
+        normalized_period = row["periodo"] if len(row["periodo"]) == 10 else period_start_date(row["periodo"])
+        connection.execute(
+            "UPDATE pagos SET periodo = ?, fecha_pago = ? WHERE id = ?",
+            (normalized_period, payment_date_for_period_date(normalized_period), row["id"]),
+        )
 
 
 def insert_demo_data(connection: sqlite3.Connection, period: str) -> tuple[int, int]:
@@ -96,6 +122,7 @@ def insert_demo_data(connection: sqlite3.Connection, period: str) -> tuple[int, 
 
 def generate_payments(connection: sqlite3.Connection, period: str) -> int:
     create_schema(connection)
+    period_date = period_start_date(period)
     payment_date = payment_date_for_period(period)
     workers = connection.execute(
         """
@@ -122,7 +149,7 @@ def generate_payments(connection: sqlite3.Connection, period: str) -> int:
             """,
             (
                 worker["codigo_empleado"],
-                period,
+                period_date,
                 payment_date,
                 worker["sueldo_base"],
                 worker["sueldo_base"],
@@ -145,6 +172,7 @@ def fetch_workers(connection: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def fetch_payments(connection: sqlite3.Connection, period: str) -> list[sqlite3.Row]:
+    period_date = period_start_date(period)
     return connection.execute(
         """
         SELECT
@@ -162,7 +190,7 @@ def fetch_payments(connection: sqlite3.Connection, period: str) -> list[sqlite3.
         WHERE p.periodo = ?
         ORDER BY p.trabajador_codigo
         """,
-        (period,),
+        (period_date,),
     ).fetchall()
 
 
@@ -200,13 +228,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init-db", help="Crea el esquema SQLite de RRHH.")
 
     seed_parser = subparsers.add_parser("seed-demo", help="Carga trabajadores y pagos demo.")
-    seed_parser.add_argument("--periodo", type=validate_period, default=previous_month_period())
+    seed_parser.add_argument("--periodo", type=validate_period, default=current_period())
 
     payments_parser = subparsers.add_parser("generar-pagos", help="Genera pagos pendientes para un periodo.")
-    payments_parser.add_argument("--periodo", type=validate_period, default=previous_month_period())
+    payments_parser.add_argument("--periodo", type=validate_period, default=current_period())
 
     list_payments = subparsers.add_parser("listar-pagos", help="Lista pagos de un periodo.")
-    list_payments.add_argument("--periodo", type=validate_period, default=previous_month_period())
+    list_payments.add_argument("--periodo", type=validate_period, default=current_period())
 
     workers_parser = subparsers.add_parser("listar-trabajadores", help="Lista trabajadores de RRHH.")
     workers_parser.set_defaults(command="listar-trabajadores")
@@ -219,8 +247,9 @@ def main() -> None:
     args = parser.parse_args()
 
     with connect() as connection:
+        create_schema(connection)
+
         if args.command == "init-db":
-            create_schema(connection)
             print(f"Base de RRHH inicializada en {DB_PATH}")
             return
 

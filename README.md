@@ -27,11 +27,12 @@ No se crea una tercera base. La integracion existe solo como codigo Python.
 1. Solo se revisa al personal de `Caja`
 2. Umbral de ventas: `10000.00`
 3. Bono fijo: `500.00`
-4. El script se ejecuta el dia `15` a las `03:00 AM`
-5. RRHH paga el dia `15` a las `10:00 PM`
-6. El periodo evaluado es el mes calendario anterior
+4. El dia `14` a las `10:00 PM` se cierra la venta del mes para efectos del bono
+5. El script se ejecuta el dia `15` a las `03:00 AM`
+6. RRHH paga el dia `15` a las `10:00 PM`
+7. Se consideran las ventas desde el primer dia del mes hasta el cierre del dia 14
 
-Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas de `04/2026` y ajusta el pago que RRHH procesara ese mismo `15/05/2026` por la noche.
+Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acumuladas entre `01/05/2026` y `14/05/2026` y ajusta el pago que RRHH procesara ese mismo `15/05/2026` por la noche.
 
 ## Estructura
 
@@ -61,15 +62,18 @@ Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas de 
 1. crea `rrhh.db`
 2. registra trabajadores y pagos del periodo
 3. deja los pagos en estado `pendiente`
-4. espera que otro proceso aplique el bono antes del cierre
+4. guarda el `periodo` como fecha completa del primer dia del mes, por ejemplo `2026-06-01`
+5. espera que otro proceso aplique el bono antes del cierre
 
 ### `integracion/aplicar_bonos.py`
 
-1. lee las ventas del mes anterior
-2. selecciona trabajadores de `Caja` que superan el umbral
-3. busca esos codigos en RRHH
-4. aplica la bonificacion al pago pendiente
-5. si se vuelve a ejecutar para el mismo periodo, no duplica el bono
+1. toma la fecha actual del sistema
+2. toma el mes actual como periodo de pago
+3. lee las ventas acumuladas desde el dia 1 hasta el dia 14 de ese mes
+4. selecciona trabajadores de `Caja` que superan el umbral
+5. busca esos codigos en RRHH
+6. aplica la bonificacion al pago pendiente
+7. si se vuelve a ejecutar para el mismo periodo, no duplica el bono
 
 ## Comandos
 
@@ -121,18 +125,14 @@ Ejecutar integracion:
 python integracion/aplicar_bonos.py
 ```
 
-Simular la corrida del dia 15 a las 03:00:
-
-```bash
-python integracion/aplicar_bonos.py --fecha-ejecucion 2026-05-15T03:00:00
-```
-
 ## Observaciones
 
 1. En RRHH puede haber otros trabajadores y otros pagos, pero el script solo toca a quienes aparecen en ventas y pertenecen a `Caja`.
 2. El bono se escribe en el campo `bono_extra` del pago mensual.
-3. Si el pago ya tiene exactamente ese bono aplicado, el script lo deja `sin cambio`.
-4. La idea es programar el script en `Task Scheduler` para el dia 15 a las 03:00 AM.
+3. En ventas se guardan fechas completas por venta, y en RRHH el `periodo` tambien se guarda como fecha completa ISO del inicio del mes.
+4. Si el pago ya tiene exactamente ese bono aplicado, el script lo reporta como `ya aplicado`.
+5. `aplicar_bonos.py` no pide argumentos. Usa la fecha actual del sistema para calcular el periodo a procesar.
+6. La idea es programar el script en `Task Scheduler` para el dia 15 a las 03:00 AM.
 
 Ejemplo de registro en Windows:
 

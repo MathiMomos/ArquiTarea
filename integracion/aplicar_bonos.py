@@ -1,69 +1,44 @@
 from __future__ import annotations
 
-import argparse
-import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
+from sqlite3 import Connection, Row, connect
 
-
-ROOT_DIR = Path(__file__).resolve().parent.parent
-VENTAS_DB_PATH = ROOT_DIR / "sistema_ventas" / "ventas.db"
-RRHH_DB_PATH = ROOT_DIR / "sistema_rrhh" / "rrhh.db"
+VENTAS_DB = Path(__file__).resolve().parent.parent / "sistema_ventas" / "ventas.db"
+RRHH_DB = Path(__file__).resolve().parent.parent / "sistema_rrhh" / "rrhh.db"
 
 TARGET_AREA = "Caja"
 VENTAS_THRESHOLD = 10000.00
 BONUS_AMOUNT = 500.00
+SALES_CUTOFF_DAY = 14
 EXECUTION_DAY = 15
 EXECUTION_HOUR = 3
 PAYMENT_DAY = 15
 PAYMENT_HOUR = 22
 
 
-def validate_period(period: str) -> str:
-    try:
-        datetime.strptime(period, "%Y-%m")
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("El periodo debe tener formato YYYY-MM.") from exc
-    return period
-
-
-def parse_execution_datetime(raw_value: str | None) -> datetime:
-    if raw_value is None:
-        return datetime.now().replace(microsecond=0)
-
-    raw_value = raw_value.strip()
-    try:
-        parsed = datetime.fromisoformat(raw_value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            "La fecha de ejecucion debe ser YYYY-MM-DD o YYYY-MM-DDTHH:MM:SS."
-        ) from exc
-
-    if len(raw_value) == 10:
-        parsed = parsed.replace(hour=EXECUTION_HOUR)
-
-    return parsed.replace(microsecond=0)
-
-
-def previous_month_period(reference: date | datetime) -> str:
+def current_period(reference: date | datetime) -> str:
     reference_date = reference.date() if isinstance(reference, datetime) else reference
-    first_day = reference_date.replace(day=1)
-    previous_month_last_day = first_day - timedelta(days=1)
-    return previous_month_last_day.strftime("%Y-%m")
+    return reference_date.strftime("%Y-%m")
 
 
-def connect_database(path: Path) -> sqlite3.Connection:
+def period_start_date(period: str) -> str:
+    year, month = map(int, period.split("-"))
+    return date(year, month, 1).isoformat()
+
+
+def connect_database(path: Path) -> Connection:
     if not path.exists():
         raise FileNotFoundError(f"No existe la base de datos: {path}")
 
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
+    connection = connect(path)
+    connection.row_factory = Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
 def assert_required_tables(
-    connection: sqlite3.Connection,
+    connection: Connection,
     database_name: str,
     expected_tables: set[str],
 ) -> None:
@@ -77,11 +52,13 @@ def assert_required_tables(
         raise RuntimeError(f"La base {database_name} no contiene las tablas requeridas: {missing_list}")
 
 
-def fetch_eligible_workers(
-    sales_connection: sqlite3.Connection,
+def get_eligible_workers(
+    sales_connection: Connection,
     period: str,
     threshold: float,
-) -> list[sqlite3.Row]:
+) -> list[Row]:
+    period_date = period_start_date(period)
+    sales_cutoff = date.fromisoformat(period_date).replace(day=SALES_CUTOFF_DAY).isoformat()
     return sales_connection.execute(
         """
         SELECT
@@ -90,22 +67,23 @@ def fetch_eligible_workers(
             ROUND(SUM(v.monto), 2) AS total_ventas
         FROM ventas v
         INNER JOIN trabajadores t ON t.codigo_empleado = v.trabajador_codigo
-        WHERE strftime('%Y-%m', v.fecha) = ?
+        WHERE v.fecha >= ?
+          AND v.fecha <= ?
           AND t.activo = 1
           AND t.area = ?
         GROUP BY t.codigo_empleado, t.nombre
         HAVING SUM(v.monto) > ?
         ORDER BY total_ventas DESC, t.codigo_empleado
         """,
-        (period, TARGET_AREA, threshold),
+        (period_date, sales_cutoff, TARGET_AREA, threshold),
     ).fetchall()
 
 
-def fetch_payments_by_employee(
-    hr_connection: sqlite3.Connection,
-    period: str,
+def get_payments_by_employee(
+    hr_connection: Connection,
+    period_date: str,
     employee_codes: list[str],
-) -> dict[str, sqlite3.Row]:
+) -> dict[str, Row]:
     if not employee_codes:
         return {}
 
@@ -117,19 +95,19 @@ def fetch_payments_by_employee(
         WHERE periodo = ?
           AND trabajador_codigo IN ({placeholders})
         """,
-        [period, *employee_codes],
+        [period_date, *employee_codes],
     ).fetchall()
     return {row["trabajador_codigo"]: row for row in rows}
 
 
 def apply_bonus(
-    sales_connection: sqlite3.Connection,
-    hr_connection: sqlite3.Connection,
+    sales_connection: Connection,
+    hr_connection: Connection,
     period: str,
     threshold: float,
     bonus_amount: float,
-) -> dict[str, list[sqlite3.Row]]:
-    eligible_workers = fetch_eligible_workers(sales_connection, period, threshold)
+) -> dict[str, list[Row]]:
+    eligible_workers = get_eligible_workers(sales_connection, period, threshold)
     if not eligible_workers:
         return {
             "eligible_workers": [],
@@ -138,13 +116,14 @@ def apply_bonus(
         }
 
     employee_codes = [row["codigo_empleado"] for row in eligible_workers]
+    period_date = period_start_date(period)
     expected_bonus = round(bonus_amount, 2)
-    updated_workers: list[sqlite3.Row] = []
-    unchanged_workers: list[sqlite3.Row] = []
+    updated_workers: list[Row] = []
+    unchanged_workers: list[Row] = []
 
     hr_connection.execute("BEGIN")
     try:
-        payments_by_employee = fetch_payments_by_employee(hr_connection, period, employee_codes)
+        payments_by_employee = get_payments_by_employee(hr_connection, period_date, employee_codes)
 
         for worker in eligible_workers:
             payment = payments_by_employee.get(worker["codigo_empleado"])
@@ -178,7 +157,7 @@ def apply_bonus(
                   AND periodo = ?
                   AND estado = 'pendiente'
                 """,
-                (expected_bonus, expected_final, worker["codigo_empleado"], period),
+                (expected_bonus, expected_final, worker["codigo_empleado"], period_date),
             )
             if update_cursor.rowcount != 1:
                 raise RuntimeError(
@@ -204,12 +183,12 @@ def print_result(
     executed_at: datetime,
     threshold: float,
     bonus_amount: float,
-    result: dict[str, list[sqlite3.Row]],
+    result: dict[str, list[Row]],
 ) -> None:
     print(f"Integracion ejecutada para el periodo {period}")
     print(f"Fecha de ejecucion usada: {executed_at.isoformat(sep=' ', timespec='seconds')}")
     print(
-        f"Se reviso solo al personal de {TARGET_AREA}. "
+        f"Se reviso solo al personal de {TARGET_AREA}, con ventas desde el inicio del mes hasta el dia {SALES_CUTOFF_DAY}. "
         f"Regla: ventas > {threshold:.2f} => bono fijo {bonus_amount:.2f}."
     )
     print(
@@ -236,34 +215,18 @@ def print_result(
         if row["codigo_empleado"] in updated_codes:
             status = "actualizado"
         elif row["codigo_empleado"] in unchanged_codes:
-            status = "sin cambio"
+            status = "ya aplicado"
         else:
             status = "revisar"
         print(
             f"{row['codigo_empleado']:<6} | {row['nombre']:<13} | {row['total_ventas']:>12.2f} | {status}"
         )
 
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Integra ventas con RRHH para aplicar bonos.")
-    parser.add_argument("--periodo", type=validate_period, help="Periodo a procesar en formato YYYY-MM.")
-    parser.add_argument(
-        "--fecha-ejecucion",
-        help="Fecha usada para resolver el periodo automaticamente. Formato YYYY-MM-DD o YYYY-MM-DDTHH:MM:SS.",
-    )
-    parser.add_argument("--umbral", type=float, default=VENTAS_THRESHOLD)
-    parser.add_argument("--bono", type=float, default=BONUS_AMOUNT)
-    return parser
-
-
 def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
+    executed_at = datetime.now().replace(microsecond=0)
+    period = current_period(executed_at)
 
-    executed_at = parse_execution_datetime(args.fecha_ejecucion)
-    period = args.periodo or previous_month_period(executed_at)
-
-    with connect_database(VENTAS_DB_PATH) as sales_connection, connect_database(RRHH_DB_PATH) as hr_connection:
+    with connect_database(VENTAS_DB) as sales_connection, connect_database(RRHH_DB) as hr_connection:
         assert_required_tables(sales_connection, "ventas.db", {"trabajadores", "ventas"})
         assert_required_tables(hr_connection, "rrhh.db", {"trabajadores", "pagos"})
 
@@ -272,13 +235,13 @@ def main() -> None:
                 sales_connection,
                 hr_connection,
                 period,
-                args.umbral,
-                args.bono,
+                VENTAS_THRESHOLD,
+                BONUS_AMOUNT,
             )
         except Exception as exc:
             raise SystemExit(f"La integracion fallo: {exc}") from exc
 
-        print_result(period, executed_at, args.umbral, args.bono, result)
+        print_result(period, executed_at, VENTAS_THRESHOLD, BONUS_AMOUNT, result)
 
 
 if __name__ == "__main__":
