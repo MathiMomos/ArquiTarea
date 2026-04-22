@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import date, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row, connect
@@ -15,12 +13,6 @@ EXECUTION_DAY = 15
 EXECUTION_HOUR = 3
 PAYMENT_DAY = 15
 PAYMENT_HOUR = 22
-
-
-def current_period(reference: date | datetime) -> str:
-    reference_date = reference.date() if isinstance(reference, datetime) else reference
-    return reference_date.strftime("%Y-%m")
-
 
 def period_start_date(period: str) -> str:
     year, month = map(int, period.split("-"))
@@ -39,7 +31,6 @@ def connect_database(path: Path) -> Connection:
 def get_eligible_workers(
     sales_connection: Connection,
     period: str,
-    threshold: float,
 ) -> list[Row]:
     period_date = period_start_date(period)
     sales_cutoff = date.fromisoformat(period_date).replace(day=SALES_CUTOFF_DAY).isoformat()
@@ -59,7 +50,7 @@ def get_eligible_workers(
         HAVING SUM(v.monto) > ?
         ORDER BY total_ventas DESC, t.codigo_empleado
         """,
-        (period_date, sales_cutoff, TARGET_AREA, threshold),
+        (period_date, sales_cutoff, TARGET_AREA, VENTAS_THRESHOLD),
     ).fetchall()
 
 
@@ -88,22 +79,15 @@ def apply_bonus(
     sales_connection: Connection,
     hr_connection: Connection,
     period: str,
-    threshold: float,
-    bonus_amount: float,
-) -> dict[str, list[Row]]:
-    eligible_workers = get_eligible_workers(sales_connection, period, threshold)
+) -> tuple[list[Row], set[str]]:
+    eligible_workers = get_eligible_workers(sales_connection, period)
     if not eligible_workers:
-        return {
-            "eligible_workers": [],
-            "updated_workers": [],
-            "unchanged_workers": [],
-        }
+        return [], set()
 
     employee_codes = [row["codigo_empleado"] for row in eligible_workers]
     period_date = period_start_date(period)
-    expected_bonus = round(bonus_amount, 2)
-    updated_workers: list[Row] = []
-    unchanged_workers: list[Row] = []
+    expected_bonus = round(BONUS_AMOUNT, 2)
+    updated_codes: set[str] = set()
 
     hr_connection.execute("BEGIN")
     try:
@@ -128,7 +112,6 @@ def apply_bonus(
                 round(payment["bono_extra"], 2) == expected_bonus
                 and round(payment["pago_final"], 2) == expected_final
             ):
-                unchanged_workers.append(worker)
                 continue
 
             update_cursor = hr_connection.execute(
@@ -149,14 +132,10 @@ def apply_bonus(
                     f"{worker['codigo_empleado']} en el periodo {period}."
                 )
 
-            updated_workers.append(worker)
+            updated_codes.add(worker["codigo_empleado"])
 
         hr_connection.commit()
-        return {
-            "eligible_workers": eligible_workers,
-            "updated_workers": updated_workers,
-            "unchanged_workers": unchanged_workers,
-        }
+        return eligible_workers, updated_codes
     except Exception:
         hr_connection.rollback()
         raise
@@ -165,25 +144,20 @@ def apply_bonus(
 def print_result(
     period: str,
     executed_at: datetime,
-    threshold: float,
-    bonus_amount: float,
-    result: dict[str, list[Row]],
+    eligible_workers: list[Row],
+    updated_codes: set[str],
 ) -> None:
     print(f"Integracion ejecutada para el periodo {period}")
     print(f"Fecha de ejecucion usada: {executed_at.isoformat(sep=' ', timespec='seconds')}")
     print(
         f"Se reviso solo al personal de {TARGET_AREA}, con ventas desde el inicio del mes hasta el dia {SALES_CUTOFF_DAY}. "
-        f"Regla: ventas > {threshold:.2f} => bono fijo {bonus_amount:.2f}."
+        f"Regla: ventas > {VENTAS_THRESHOLD:.2f} => bono fijo {BONUS_AMOUNT:.2f}."
     )
     print(
         f"Ventana sugerida: dia {EXECUTION_DAY} a las {EXECUTION_HOUR:02d}:00; "
         f"pago RRHH dia {PAYMENT_DAY} a las {PAYMENT_HOUR:02d}:00."
     )
     print()
-
-    eligible_workers = result["eligible_workers"]
-    updated_workers = result["updated_workers"]
-    unchanged_workers = result["unchanged_workers"]
 
     if not eligible_workers:
         print("No hubo trabajadores de caja elegibles para bonificacion.")
@@ -192,37 +166,27 @@ def print_result(
     print("Trabajadores elegibles")
     print("codigo | nombre        | total ventas | estado")
     print("-------+---------------+--------------+-----------")
-    updated_codes = {row["codigo_empleado"] for row in updated_workers}
-    unchanged_codes = {row["codigo_empleado"] for row in unchanged_workers}
 
     for row in eligible_workers:
         if row["codigo_empleado"] in updated_codes:
             status = "actualizado"
-        elif row["codigo_empleado"] in unchanged_codes:
-            status = "ya aplicado"
         else:
-            status = "revisar"
+            status = "ya aplicado"
         print(
             f"{row['codigo_empleado']:<6} | {row['nombre']:<13} | {row['total_ventas']:>12.2f} | {status}"
         )
 
 def main() -> None:
     executed_at = datetime.now().replace(microsecond=0)
-    period = current_period(executed_at)
+    period = executed_at.strftime("%Y-%m")
 
     with connect_database(VENTAS_DB) as sales_connection, connect_database(RRHH_DB) as hr_connection:
         try:
-            result = apply_bonus(
-                sales_connection,
-                hr_connection,
-                period,
-                VENTAS_THRESHOLD,
-                BONUS_AMOUNT,
-            )
+            eligible_workers, updated_codes = apply_bonus(sales_connection, hr_connection, period)
         except Exception as exc:
             raise SystemExit(f"La integracion fallo: {exc}") from exc
 
-        print_result(period, executed_at, VENTAS_THRESHOLD, BONUS_AMOUNT, result)
+        print_result(period, executed_at, eligible_workers, updated_codes)
 
 
 if __name__ == "__main__":
