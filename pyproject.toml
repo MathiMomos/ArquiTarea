@@ -1,0 +1,7 @@
+[project]
+name = "arquitarea"
+version = "0.1.0"
+description = "Demo de sistemas aislados con integracion batch por SQLite"
+requires-python = ">=3.14"
+readme = "README.md"
+dependencies = []
