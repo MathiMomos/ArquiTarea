@@ -14,6 +14,7 @@ DEMO_TRABAJADORES = (
     ("E002", "Bruno Diaz", 2300.00, 1),
     ("E003", "Carla Perez", 2800.00, 1),
     ("E004", "Diego Rojas", 2200.00, 1),
+    ("E010", "Luisa Campos", 2100.00, 1),
 )
 
 

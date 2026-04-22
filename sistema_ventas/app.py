@@ -10,10 +10,10 @@ from pathlib import Path
 DB_PATH = Path(__file__).with_name("ventas.db")
 
 DEMO_TRABAJADORES = (
-    ("E001", "Ana Lopez", "Ventas corporativas", 1),
-    ("E002", "Bruno Diaz", "Ventas retail", 1),
-    ("E003", "Carla Perez", "Ventas institucionales", 1),
-    ("E004", "Diego Rojas", "Ventas retail", 1),
+    ("E001", "Ana Lopez", "Caja", 1),
+    ("E002", "Bruno Diaz", "Caja", 1),
+    ("E003", "Carla Perez", "Caja", 1),
+    ("E004", "Diego Rojas", "Supervision", 1),
 )
 
 DEMO_VENTAS = {
@@ -82,8 +82,12 @@ def insert_demo_data(connection: sqlite3.Connection, period: str) -> int:
     create_schema(connection)
     connection.executemany(
         """
-        INSERT OR IGNORE INTO trabajadores (codigo_empleado, nombre, area, activo)
+        INSERT INTO trabajadores (codigo_empleado, nombre, area, activo)
         VALUES (?, ?, ?, ?)
+        ON CONFLICT(codigo_empleado) DO UPDATE SET
+            nombre = excluded.nombre,
+            area = excluded.area,
+            activo = excluded.activo
         """,
         DEMO_TRABAJADORES,
     )
