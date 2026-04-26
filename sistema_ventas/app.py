@@ -1,11 +1,18 @@
 import argparse
 import calendar
 import sqlite3
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
-DB_PATH = Path(__file__).with_name("ventas.db")
+def default_db_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().with_name("ventas.db")
+    return Path(__file__).with_name("ventas.db")
+
+
+DB_PATH = default_db_path()
 
 DEMO_TRABAJADORES = (
     ("E001", "Ana Lopez", "Caja", 1),
@@ -233,12 +240,23 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--fecha", required=True)
     register_parser.add_argument("--monto", type=float, required=True)
 
+    subparsers.add_parser("ui", help="Abre la interfaz de escritorio del sistema de ventas.")
+
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command == "ui":
+        try:
+            from .ui import launch_ui
+        except ImportError:
+            from ui import launch_ui
+
+        launch_ui()
+        return
 
     with connect() as connection:
         if args.command == "init-db":

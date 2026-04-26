@@ -1,10 +1,17 @@
 import argparse
 import sqlite3
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
-DB_PATH = Path(__file__).with_name("rrhh.db")
+def default_db_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().with_name("rrhh.db")
+    return Path(__file__).with_name("rrhh.db")
+
+
+DB_PATH = default_db_path()
 PAYMENT_DAY = 15
 
 DEMO_TRABAJADORES = (
@@ -237,12 +244,23 @@ def build_parser() -> argparse.ArgumentParser:
     workers_parser = subparsers.add_parser("listar-trabajadores", help="Lista trabajadores de RRHH.")
     workers_parser.set_defaults(command="listar-trabajadores")
 
+    subparsers.add_parser("ui", help="Abre la interfaz de escritorio del sistema de RRHH.")
+
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command == "ui":
+        try:
+            from .ui import launch_ui
+        except ImportError:
+            from ui import launch_ui
+
+        launch_ui()
+        return
 
     with connect() as connection:
         create_schema(connection)

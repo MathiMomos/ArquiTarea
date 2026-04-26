@@ -1,22 +1,41 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row, connect
+import sys
 
-VENTAS_DB = Path(__file__).resolve().parent.parent / "sistema_ventas" / "ventas.db"
-RRHH_DB = Path(__file__).resolve().parent.parent / "sistema_rrhh" / "rrhh.db"
+
+def database_paths() -> tuple[Path, Path]:
+    if getattr(sys, "frozen", False):
+        root = Path(sys.executable).resolve().parent
+        return root / "ventas.db", root / "rrhh.db"
+
+    root = Path(__file__).resolve().parent.parent
+    return root / "sistema_ventas" / "ventas.db", root / "sistema_rrhh" / "rrhh.db"
+
+
+VENTAS_DB, RRHH_DB = database_paths()
 
 TARGET_AREA = "Caja"
 VENTAS_THRESHOLD = 10000.00
 BONUS_AMOUNT = 500.00
+SALES_WINDOW_START_DAY = 15
 SALES_CUTOFF_DAY = 14
 EXECUTION_DAY = 15
 EXECUTION_HOUR = 3
 PAYMENT_DAY = 15
-PAYMENT_HOUR = 22
+PAYMENT_HOUR = 8
 
 def period_start_date(period: str) -> str:
     year, month = map(int, period.split("-"))
     return date(year, month, 1).isoformat()
+
+
+def sales_window(period: str) -> tuple[str, str]:
+    period_date = date.fromisoformat(period_start_date(period))
+    previous_month_last_day = period_date - timedelta(days=1)
+    sales_start = previous_month_last_day.replace(day=SALES_WINDOW_START_DAY).isoformat()
+    sales_cutoff = period_date.replace(day=SALES_CUTOFF_DAY).isoformat()
+    return sales_start, sales_cutoff
 
 
 def connect_database(path: Path) -> Connection:
@@ -32,8 +51,7 @@ def get_eligible_workers(
     sales_connection: Connection,
     period: str,
 ) -> list[Row]:
-    period_date = period_start_date(period)
-    sales_cutoff = date.fromisoformat(period_date).replace(day=SALES_CUTOFF_DAY).isoformat()
+    sales_start, sales_cutoff = sales_window(period)
     return sales_connection.execute(
         """
         SELECT
@@ -50,7 +68,7 @@ def get_eligible_workers(
         HAVING SUM(v.monto) > ?
         ORDER BY total_ventas DESC, t.codigo_empleado
         """,
-        (period_date, sales_cutoff, TARGET_AREA, VENTAS_THRESHOLD),
+        (sales_start, sales_cutoff, TARGET_AREA, VENTAS_THRESHOLD),
     ).fetchall()
 
 
@@ -147,10 +165,11 @@ def print_result(
     eligible_workers: list[Row],
     updated_codes: set[str],
 ) -> None:
+    sales_start, sales_cutoff = sales_window(period)
     print(f"Integracion ejecutada para el periodo {period}")
     print(f"Fecha de ejecucion usada: {executed_at.isoformat(sep=' ', timespec='seconds')}")
     print(
-        f"Se reviso solo al personal de {TARGET_AREA}, con ventas desde el inicio del mes hasta el dia {SALES_CUTOFF_DAY}. "
+        f"Se reviso solo al personal de {TARGET_AREA}, con ventas desde {sales_start} hasta {sales_cutoff}. "
         f"Regla: ventas > {VENTAS_THRESHOLD:.2f} => bono fijo {BONUS_AMOUNT:.2f}."
     )
     print(

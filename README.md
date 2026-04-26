@@ -2,6 +2,10 @@
 
 Este proyecto arma un caso simple de integracion entre dos sistemas que no se pueden modificar.
 
+Cada sistema funciona como un monolito aislado: tiene su propia base local, su propia logica y ahora tambien su propia interfaz de escritorio.
+
+Tambien se pueden empaquetar como ejecutables independientes de Windows para abrirlos con doble clic.
+
 1. `sistema_ventas` guarda las ventas de los trabajadores en `SQLite`.
 2. `sistema_rrhh` guarda los pagos de los trabajadores en otra base `SQLite`.
 
@@ -29,10 +33,10 @@ No se crea una tercera base. La integracion existe solo como codigo Python.
 3. Bono fijo: `500.00`
 4. El dia `14` a las `10:00 PM` se cierra la venta del mes para efectos del bono
 5. El script se ejecuta el dia `15` a las `03:00 AM`
-6. RRHH paga el dia `15` a las `10:00 PM`
-7. Se consideran las ventas desde el primer dia del mes hasta el cierre del dia 14
+6. RRHH paga el dia `15` a las `08:00 AM`
+7. Se consideran las ventas desde el dia `15` del mes anterior hasta el cierre del dia `14` del mes actual
 
-Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acumuladas entre `01/05/2026` y `14/05/2026` y ajusta el pago que RRHH procesara ese mismo `15/05/2026` por la noche.
+Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acumuladas entre `15/04/2026` y `14/05/2026` y ajusta el pago que RRHH procesara ese mismo `15/05/2026` a las `08:00`.
 
 ## Estructura
 
@@ -41,9 +45,11 @@ Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acu
 |-- integracion/
 |   `-- aplicar_bonos.py
 |-- sistema_rrhh/
-|   `-- app.py
+|   |-- app.py
+|   `-- ui.py
 |-- sistema_ventas/
-|   `-- app.py
+|   |-- app.py
+|   `-- ui.py
 |-- main.py
 `-- README.md
 ```
@@ -56,6 +62,7 @@ Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acu
 2. registra trabajadores y ventas
 3. permite cargar datos de ejemplo
 4. permite listar ventas y ver resumenes mensuales
+5. ofrece una interfaz de escritorio propia para operar el sistema sin usar otra aplicacion
 
 ### `sistema_rrhh/app.py`
 
@@ -64,12 +71,13 @@ Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acu
 3. deja los pagos en estado `pendiente`
 4. guarda el `periodo` como fecha completa del primer dia del mes, por ejemplo `2026-06-01`
 5. espera que otro proceso aplique el bono antes del cierre
+6. ofrece una interfaz de escritorio propia para operar el sistema sin usar otra aplicacion
 
 ### `integracion/aplicar_bonos.py`
 
 1. toma la fecha actual del sistema
 2. toma el mes actual como periodo de pago
-3. lee las ventas acumuladas desde el dia 1 hasta el dia 14 de ese mes
+3. lee las ventas acumuladas desde el dia 15 del mes anterior hasta el dia 14 de ese mes
 4. selecciona trabajadores de `Caja` que superan el umbral
 5. busca esos codigos en RRHH
 6. aplica la bonificacion al pago pendiente
@@ -101,6 +109,12 @@ Ver resumen mensual de ventas:
 python sistema_ventas/app.py resumen-mensual
 ```
 
+Abrir interfaz de ventas:
+
+```bash
+python sistema_ventas/app.py ui
+```
+
 Inicializar RRHH:
 
 ```bash
@@ -119,6 +133,32 @@ Ver pagos de RRHH:
 python sistema_rrhh/app.py listar-pagos
 ```
 
+Abrir interfaz de RRHH:
+
+```bash
+python sistema_rrhh/app.py ui
+```
+
+Generar ejecutables `.exe`:
+
+```bash
+python build_exes.py
+```
+
+Ejecutables generados:
+
+```text
+dist/SistemaVentas.exe
+dist/SistemaRRHH.exe
+```
+
+Al ejecutarse empaquetados, cada aplicacion usa su base SQLite junto al `.exe`:
+
+```text
+dist/ventas.db
+dist/rrhh.db
+```
+
 Ejecutar integracion:
 
 ```bash
@@ -131,3 +171,6 @@ python integracion/aplicar_bonos.py
 2. El bono se escribe en el campo `bono_extra` del pago mensual.
 3. `aplicar_bonos.py` no pide argumentos. Usa la fecha actual del sistema para calcular el periodo a procesar.
 4. La idea es programar el script en `Task Scheduler` para el dia 15 a las 03:00 AM.
+5. Las interfaces de `ventas` y `RRHH` son independientes; ninguna llama directamente a la otra.
+6. La integracion sigue siendo externa y batch: el unico punto de cruce es `integracion/aplicar_bonos.py`.
+7. `build_exes.py` empaqueta los dos monolitos como aplicaciones de escritorio separadas para Windows.
