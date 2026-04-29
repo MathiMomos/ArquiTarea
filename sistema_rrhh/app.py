@@ -196,7 +196,7 @@ def sync_payment_breakdown(connection: sqlite3.Connection, payment_id: int, suel
 def has_legacy_payment_schema(connection: sqlite3.Connection) -> bool:
     if not table_exists(connection, "pagos"):
         return False
-    return {"sueldo_base", "bono_extra", "pago_final"}.issubset(table_columns(connection, "pagos"))
+    return "sueldo_base" in table_columns(connection, "pagos")
 
 
 def migrate_legacy_payment_schema(connection: sqlite3.Connection) -> None:
@@ -336,10 +336,7 @@ def fetch_payments(connection: sqlite3.Connection, period: str) -> list[sqlite3.
             t.nombre,
             p.periodo,
             p.fecha_pago,
-            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE 0 END), 0), 2) AS total_ingresos,
-            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'descuento' THEN pc.monto ELSE 0 END), 0), 2) AS total_descuentos,
-            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE -pc.monto END), 0), 2) AS pago_neto,
-            COUNT(pc.id) AS cantidad_conceptos,
+            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE -pc.monto END), 0), 2) AS monto_pagar,
             p.estado
         FROM pagos p
         INNER JOIN trabajadores t ON t.codigo_empleado = p.trabajador_codigo
@@ -350,16 +347,6 @@ def fetch_payments(connection: sqlite3.Connection, period: str) -> list[sqlite3.
         ORDER BY p.trabajador_codigo
         """,
         (period_date,),
-    ).fetchall()
-
-
-def fetch_payment_concepts(connection: sqlite3.Connection) -> list[sqlite3.Row]:
-    return connection.execute(
-        """
-        SELECT codigo, nombre, tipo, activo
-        FROM conceptos_pago
-        ORDER BY tipo, codigo
-        """
     ).fetchall()
 
 
@@ -381,26 +368,13 @@ def print_payments(rows: list[sqlite3.Row], period: str) -> None:
         return
 
     print(f"Pagos RRHH para el periodo {period}")
-    print("codigo | nombre        | ingresos | desc.   | neto    | conceptos | fecha pago  | estado")
-    print("-------+---------------+----------+---------+---------+-----------+-------------+----------")
+    print("codigo | nombre        | monto pagar | fecha pago  | estado")
+    print("-------+---------------+-------------+-------------+----------")
     for row in rows:
         print(
-            f"{row['trabajador_codigo']:<6} | {row['nombre']:<13} | {row['total_ingresos']:>8.2f} | "
-            f"{row['total_descuentos']:>7.2f} | {row['pago_neto']:>7.2f} | {row['cantidad_conceptos']:>9} | "
+            f"{row['trabajador_codigo']:<6} | {row['nombre']:<13} | {row['monto_pagar']:>11.2f} | "
             f"{row['fecha_pago']:<11} | {row['estado']}"
         )
-
-
-def print_payment_concepts(rows: list[sqlite3.Row]) -> None:
-    if not rows:
-        print("No hay conceptos de pago registrados en RRHH.")
-        return
-
-    print("codigo       | nombre               | tipo      | activo")
-    print("-------------+----------------------+-----------+-------")
-    for row in rows:
-        active = "si" if row["activo"] else "no"
-        print(f"{row['codigo']:<12} | {row['nombre']:<20} | {row['tipo']:<9} | {active}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -417,8 +391,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_payments = subparsers.add_parser("listar-pagos", help="Lista pagos de un periodo.")
     list_payments.add_argument("--periodo", type=validate_period, default=current_period())
-
-    subparsers.add_parser("listar-conceptos", help="Lista conceptos de pago disponibles.")
 
     workers_parser = subparsers.add_parser("listar-trabajadores", help="Lista trabajadores de RRHH.")
     workers_parser.set_defaults(command="listar-trabajadores")
@@ -463,10 +435,6 @@ def main() -> None:
 
         if args.command == "listar-pagos":
             print_payments(fetch_payments(connection, args.periodo), args.periodo)
-            return
-
-        if args.command == "listar-conceptos":
-            print_payment_concepts(fetch_payment_concepts(connection))
             return
 
         if args.command == "listar-trabajadores":

@@ -113,6 +113,72 @@ def ensure_bonus_concept(hr_connection: Connection) -> None:
     )
 
 
+def fetch_bonus_payments(
+    hr_connection: Connection,
+    employee_code: str,
+    period: str | None = None,
+) -> list[Row]:
+    params: list[str] = [BONUS_CONCEPT_CODE, employee_code]
+    period_filter = ""
+    if period:
+        params.append(period_start_date(period))
+        period_filter = "AND p.periodo = ?"
+
+    return hr_connection.execute(
+        f"""
+        SELECT
+            p.trabajador_codigo,
+            t.nombre,
+            p.periodo,
+            p.fecha_pago,
+            p.estado,
+            ROUND(pc.monto, 2) AS bono_monto,
+            ROUND(COALESCE(SUM(CASE WHEN all_c.tipo = 'ingreso' THEN all_pc.monto ELSE -all_pc.monto END), 0), 2) AS monto_pagar
+        FROM pagos p
+        INNER JOIN trabajadores t ON t.codigo_empleado = p.trabajador_codigo
+        INNER JOIN pago_conceptos pc
+            ON pc.pago_id = p.id
+           AND pc.concepto_codigo = ?
+        LEFT JOIN pago_conceptos all_pc ON all_pc.pago_id = p.id
+        LEFT JOIN conceptos_pago all_c ON all_c.codigo = all_pc.concepto_codigo
+        WHERE p.trabajador_codigo = ?
+          {period_filter}
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado, pc.monto
+        ORDER BY p.periodo DESC
+        """,
+        params,
+    ).fetchall()
+
+
+def fetch_bonus_period_payments(
+    hr_connection: Connection,
+    period: str,
+) -> list[Row]:
+    return hr_connection.execute(
+        """
+        SELECT
+            p.trabajador_codigo,
+            t.nombre,
+            p.periodo,
+            p.fecha_pago,
+            p.estado,
+            ROUND(pc.monto, 2) AS bono_monto,
+            ROUND(COALESCE(SUM(CASE WHEN all_c.tipo = 'ingreso' THEN all_pc.monto ELSE -all_pc.monto END), 0), 2) AS monto_pagar
+        FROM pagos p
+        INNER JOIN trabajadores t ON t.codigo_empleado = p.trabajador_codigo
+        INNER JOIN pago_conceptos pc
+            ON pc.pago_id = p.id
+           AND pc.concepto_codigo = ?
+        LEFT JOIN pago_conceptos all_pc ON all_pc.pago_id = p.id
+        LEFT JOIN conceptos_pago all_c ON all_c.codigo = all_pc.concepto_codigo
+        WHERE p.periodo = ?
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado, pc.monto
+        ORDER BY p.trabajador_codigo
+        """,
+        (BONUS_CONCEPT_CODE, period_start_date(period)),
+    ).fetchall()
+
+
 def apply_bonus(
     sales_connection: Connection,
     hr_connection: Connection,

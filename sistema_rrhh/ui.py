@@ -7,73 +7,182 @@ except ImportError:
     import app as backend
 
 
+HEADER_BG = "#3a204e"
+HEADER_FG = "#f7f2fb"
+SURFACE_BG = "#f4f0f7"
+
+
 class RRHHUI(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Sistema de RRHH")
-        self.geometry("980x620")
-        self.minsize(840, 520)
+        self.geometry("1240x760")
+        self.minsize(1020, 640)
+        self.configure(bg=SURFACE_BG)
 
         self.period_var = tk.StringVar(value=backend.current_period())
         self.status_var = tk.StringVar(value=f"Base local: {backend.DB_PATH}")
-        self.table_title_var = tk.StringVar(value="Sin datos cargados")
+        self.table_title_var = tk.StringVar(value="Control de nomina")
+        self.view_note_var = tk.StringVar(value="Consulta la nomina del periodo para revisar los montos a depositar.")
+        self.selection_var = tk.StringVar(value="Selecciona un registro para ver su detalle rapido.")
+        self.metric_vars = {
+            "periodo": tk.StringVar(value="-"),
+            "fecha_pago": tk.StringVar(value="-"),
+            "pendientes": tk.StringVar(value="0"),
+            "planilla": tk.StringVar(value="0.00"),
+            "trabajadores": tk.StringVar(value="0"),
+        }
 
+        self.current_columns: list[tuple[str, str]] = []
+        self.current_rows: list[dict[str, object]] = []
+
+        self._configure_style()
         self._build_layout()
-        self.show_workers()
+        self.show_payments()
+
+    def _configure_style(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("MetricValue.TLabel", font=("Segoe UI", 16, "bold"))
+        style.configure("Section.TLabelframe", padding=10)
+        style.configure("Section.TLabelframe.Label", font=("Segoe UI", 9, "bold"))
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(1, weight=1)
 
-        controls = ttk.Frame(self, padding=12)
-        controls.grid(row=0, column=0, sticky="ew")
-        controls.columnconfigure(1, weight=1)
+        header = tk.Frame(self, bg=HEADER_BG, padx=18, pady=16)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
 
-        quick_actions = ttk.LabelFrame(controls, text="Acciones")
-        quick_actions.grid(row=0, column=0, sticky="nw", padx=(0, 12))
+        tk.Label(
+            header,
+            text="Sistema de RRHH",
+            bg=HEADER_BG,
+            fg=HEADER_FG,
+            font=("Segoe UI Semibold", 20),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            header,
+            text="Operacion aislada de nomina mensual y padron de trabajadores.",
+            bg=HEADER_BG,
+            fg="#ddcfe8",
+            font=("Segoe UI", 10),
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        tk.Label(
+            header,
+            textvariable=self.status_var,
+            bg=HEADER_BG,
+            fg="#eadff2",
+            font=("Consolas", 9),
+        ).grid(row=0, column=1, rowspan=2, sticky="e")
 
-        ttk.Button(quick_actions, text="Inicializar BD", command=self.initialize_database).grid(
-            row=0, column=0, sticky="ew", padx=8, pady=(8, 4)
-        )
-        ttk.Button(quick_actions, text="Cargar demo", command=self.seed_demo).grid(
-            row=1, column=0, sticky="ew", padx=8, pady=4
-        )
-        ttk.Button(quick_actions, text="Generar pagos", command=self.generate_payments).grid(
-            row=2, column=0, sticky="ew", padx=8, pady=4
-        )
-        ttk.Button(quick_actions, text="Listar trabajadores", command=self.show_workers).grid(
-            row=3, column=0, sticky="ew", padx=8, pady=4
-        )
-        ttk.Button(quick_actions, text="Listar pagos", command=self.show_payments).grid(
-            row=4, column=0, sticky="ew", padx=8, pady=(4, 8)
-        )
-        ttk.Button(quick_actions, text="Listar conceptos", command=self.show_concepts).grid(
-            row=5, column=0, sticky="ew", padx=8, pady=(0, 8)
-        )
+        main = ttk.Frame(self, padding=(14, 14, 14, 14))
+        main.grid(row=1, column=0, sticky="nsew")
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(0, weight=1)
 
-        filters = ttk.LabelFrame(controls, text="Periodo de trabajo")
-        filters.grid(row=0, column=1, sticky="ew")
-        filters.columnconfigure(1, weight=1)
+        sidebar = ttk.Frame(main)
+        sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 14))
 
-        ttk.Label(filters, text="Periodo (YYYY-MM)").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
-        ttk.Entry(filters, textvariable=self.period_var).grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(8, 4))
+        workspace = ttk.Frame(main)
+        workspace.grid(row=0, column=1, sticky="nsew")
+        workspace.columnconfigure(0, weight=1)
+        workspace.rowconfigure(1, weight=1)
+
+        self._build_sidebar(sidebar)
+        self._build_workspace(workspace)
+
+    def _build_sidebar(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+
+        payroll = ttk.LabelFrame(parent, text="Ciclo de nomina", style="Section.TLabelframe")
+        payroll.grid(row=0, column=0, sticky="ew")
+        payroll.columnconfigure(0, weight=1)
+
+        ttk.Label(payroll, text="Periodo operativo (YYYY-MM)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(payroll, textvariable=self.period_var).grid(row=1, column=0, sticky="ew", pady=(4, 10))
+        ttk.Button(payroll, text="Ver pagos del periodo", command=self.show_payments).grid(row=2, column=0, sticky="ew")
+        ttk.Button(payroll, text="Generar pagos pendientes", command=self.generate_payments).grid(
+            row=3, column=0, sticky="ew", pady=(6, 0)
+        )
         ttk.Label(
-            filters,
-            text="RRHH maneja pagos del mes actual y calcula el total con los conceptos registrados en cada pago.",
-            wraplength=420,
+            payroll,
+            text="La pantalla muestra el monto final a depositar y el estado operativo del pago.",
+            wraplength=250,
             justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 8))
+        ).grid(row=4, column=0, sticky="w", pady=(10, 0))
 
-        title = ttk.Label(self, textvariable=self.table_title_var, padding=(12, 0), font=("Segoe UI", 10, "bold"))
-        title.grid(row=1, column=0, sticky="w")
+        people = ttk.LabelFrame(parent, text="Padron de personal", style="Section.TLabelframe")
+        people.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        people.columnconfigure(0, weight=1)
 
-        table_frame = ttk.Frame(self, padding=(12, 8, 12, 8))
+        ttk.Button(people, text="Ver trabajadores", command=self.show_workers).grid(row=0, column=0, sticky="ew")
+        ttk.Button(people, text="Cargar demo de RRHH", command=self.seed_demo).grid(
+            row=1, column=0, sticky="ew", pady=(6, 0)
+        )
+        ttk.Label(
+            people,
+            text="El padron se mantiene separado de los demas sistemas y opera sobre su propia base local.",
+            wraplength=250,
+            justify="left",
+        ).grid(row=2, column=0, sticky="w", pady=(10, 0))
+
+        maintenance = ttk.LabelFrame(parent, text="Mantenimiento", style="Section.TLabelframe")
+        maintenance.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        maintenance.columnconfigure(0, weight=1)
+
+        ttk.Button(maintenance, text="Inicializar base local", command=self.initialize_database).grid(
+            row=0, column=0, sticky="ew"
+        )
+        ttk.Label(
+            maintenance,
+            text="Usa esta accion cuando se despliega el sistema por primera vez o se recrea la base local.",
+            wraplength=250,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(10, 0))
+
+    def _build_workspace(self, parent: ttk.Frame) -> None:
+        metrics = ttk.Frame(parent)
+        metrics.grid(row=0, column=0, sticky="ew")
+        for index in range(5):
+            metrics.columnconfigure(index, weight=1)
+
+        metric_specs = [
+            ("Periodo", "periodo"),
+            ("Fecha de pago", "fecha_pago"),
+            ("Pagos pendientes", "pendientes"),
+            ("Total planilla", "planilla"),
+            ("Trabajadores activos", "trabajadores"),
+        ]
+        for column, (title, key) in enumerate(metric_specs):
+            card = ttk.LabelFrame(metrics, text=title, style="Section.TLabelframe")
+            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
+            ttk.Label(card, textvariable=self.metric_vars[key], style="MetricValue.TLabel").grid(row=0, column=0, sticky="w")
+
+        content = ttk.Frame(parent)
+        content.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(2, weight=1)
+
+        ttk.Label(content, textvariable=self.table_title_var, font=("Segoe UI", 11, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(content, textvariable=self.view_note_var, wraplength=860, justify="left").grid(
+            row=1, column=0, sticky="w", pady=(2, 10)
+        )
+
+        table_frame = ttk.Frame(content)
         table_frame.grid(row=2, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
         self.table = ttk.Treeview(table_frame, show="headings")
         self.table.grid(row=0, column=0, sticky="nsew")
+        self.table.bind("<<TreeviewSelect>>", self._on_row_selected)
 
         vertical = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
         vertical.grid(row=0, column=1, sticky="ns")
@@ -81,8 +190,12 @@ class RRHHUI(tk.Tk):
         horizontal.grid(row=1, column=0, sticky="ew")
         self.table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
 
-        status = ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 12))
-        status.grid(row=3, column=0, sticky="ew")
+        detail = ttk.LabelFrame(content, text="Detalle rapido", style="Section.TLabelframe")
+        detail.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        detail.columnconfigure(0, weight=1)
+        ttk.Label(detail, textvariable=self.selection_var, wraplength=860, justify="left").grid(
+            row=0, column=0, sticky="w"
+        )
 
     def _show_error(self, message: str) -> None:
         self.status_var.set(message)
@@ -91,26 +204,69 @@ class RRHHUI(tk.Tk):
     def _ensure_period(self) -> str:
         return backend.validate_period(self.period_var.get().strip())
 
-    def _show_table(self, title: str, columns: list[tuple[str, str]], rows: list[dict[str, object]]) -> None:
+    def _safe_period(self) -> str:
+        try:
+            return self._ensure_period()
+        except Exception:
+            return backend.current_period()
+
+    def _refresh_dashboard(self, period: str | None = None) -> None:
+        period = period or self._safe_period()
+        try:
+            with backend.connect() as connection:
+                backend.create_schema(connection)
+                workers = backend.fetch_workers(connection)
+                payments = backend.fetch_payments(connection, period)
+        except Exception:
+            workers = []
+            payments = []
+
+        total_planilla = sum(float(row["monto_pagar"]) for row in payments) if payments else 0.0
+        pending = sum(1 for row in payments if row["estado"] == "pendiente")
+        self.metric_vars["periodo"].set(period)
+        self.metric_vars["fecha_pago"].set(backend.payment_date_for_period(period))
+        self.metric_vars["pendientes"].set(str(pending))
+        self.metric_vars["planilla"].set(f"{total_planilla:.2f}")
+        self.metric_vars["trabajadores"].set(str(sum(1 for row in workers if row["activo"])))
+
+    def _show_table(
+        self,
+        title: str,
+        note: str,
+        columns: list[tuple[str, str]],
+        rows: list[dict[str, object]],
+    ) -> None:
         self.table_title_var.set(title)
+        self.view_note_var.set(note)
+        self.selection_var.set("Selecciona un registro para ver su detalle rapido.")
         self.table.delete(*self.table.get_children())
+
+        self.current_columns = columns
+        self.current_rows = rows
 
         column_ids = [key for key, _ in columns]
         self.table.configure(columns=column_ids)
 
         for key, heading in columns:
             max_length = max((len(str(row.get(key, ""))) for row in rows), default=0)
-            width = max(110, min(260, max(len(heading), max_length) * 9 + 20))
+            width = max(110, min(260, max(len(heading), max_length) * 9 + 24))
             self.table.heading(key, text=heading)
             self.table.column(key, width=width, anchor="w")
 
-        for row in rows:
-            self.table.insert("", "end", values=[row.get(key, "") for key in column_ids])
+        for index, row in enumerate(rows):
+            self.table.insert("", "end", iid=str(index), values=[row.get(key, "") for key in column_ids])
 
-        if rows:
-            self.status_var.set(f"{title}: {len(rows)} registro(s).")
-        else:
-            self.status_var.set(f"{title}: sin registros.")
+        self.status_var.set(f"{title}: {len(rows)} registro(s).") if rows else self.status_var.set(
+            f"{title}: sin registros."
+        )
+
+    def _on_row_selected(self, _event: object) -> None:
+        selected = self.table.selection()
+        if not selected:
+            return
+        row = self.current_rows[int(selected[0])]
+        detail_parts = [f"{heading}: {row.get(key, '')}" for key, heading in self.current_columns]
+        self.selection_var.set(" | ".join(detail_parts))
 
     def initialize_database(self) -> None:
         try:
@@ -121,6 +277,7 @@ class RRHHUI(tk.Tk):
             return
 
         self.status_var.set(f"Base de RRHH lista en {backend.DB_PATH}")
+        self._refresh_dashboard(self._safe_period())
 
     def seed_demo(self) -> None:
         try:
@@ -166,8 +323,10 @@ class RRHHUI(tk.Tk):
             }
             for row in rows
         ]
+        self._refresh_dashboard(self._safe_period())
         self._show_table(
-            "Trabajadores registrados",
+            "Padron de trabajadores",
+            "Padron interno de RRHH usado para generar pagos mensuales y controlar la actividad del personal.",
             [
                 ("codigo_empleado", "Codigo"),
                 ("nombre", "Nombre"),
@@ -191,57 +350,24 @@ class RRHHUI(tk.Tk):
             {
                 "trabajador_codigo": row["trabajador_codigo"],
                 "nombre": row["nombre"],
-                "periodo": row["periodo"],
+                "periodo": row["periodo"][:7],
                 "fecha_pago": row["fecha_pago"],
-                "cantidad_conceptos": row["cantidad_conceptos"],
-                "total_ingresos": f"{row['total_ingresos']:.2f}",
-                "total_descuentos": f"{row['total_descuentos']:.2f}",
-                "pago_neto": f"{row['pago_neto']:.2f}",
+                "monto_pagar": f"{row['monto_pagar']:.2f}",
                 "estado": row["estado"],
             }
             for row in rows
         ]
+        self._refresh_dashboard(period)
         self._show_table(
-            f"Pagos del periodo {period}",
+            f"Nomina del periodo {period}",
+            "Vista operativa de pagos: RRHH expone el monto final a depositar y el estado del pago para cada trabajador.",
             [
                 ("trabajador_codigo", "Codigo"),
                 ("nombre", "Nombre"),
                 ("periodo", "Periodo"),
                 ("fecha_pago", "Fecha pago"),
-                ("cantidad_conceptos", "Conceptos"),
-                ("total_ingresos", "Ingresos"),
-                ("total_descuentos", "Descuentos"),
-                ("pago_neto", "Neto"),
+                ("monto_pagar", "Monto a pagar"),
                 ("estado", "Estado"),
-            ],
-            data,
-        )
-
-    def show_concepts(self) -> None:
-        try:
-            with backend.connect() as connection:
-                backend.create_schema(connection)
-                rows = backend.fetch_payment_concepts(connection)
-        except Exception as exc:
-            self._show_error(f"No se pudieron obtener los conceptos: {exc}")
-            return
-
-        data = [
-            {
-                "codigo": row["codigo"],
-                "nombre": row["nombre"],
-                "tipo": row["tipo"],
-                "activo": "Si" if row["activo"] else "No",
-            }
-            for row in rows
-        ]
-        self._show_table(
-            "Conceptos de pago",
-            [
-                ("codigo", "Codigo"),
-                ("nombre", "Nombre"),
-                ("tipo", "Tipo"),
-                ("activo", "Activo"),
             ],
             data,
         )
