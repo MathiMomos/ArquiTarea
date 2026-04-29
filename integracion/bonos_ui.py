@@ -45,7 +45,7 @@ class BonusQueryUI(tk.Tk):
         self.minsize(1040, 660)
         self.configure(bg=SURFACE_BG)
 
-        self.execution_period_var = tk.StringVar(value=datetime.now().strftime("%Y-%m"))
+        self.execution_period_var = tk.StringVar(value=backend.execution_period())
         self.worker_code_var = tk.StringVar()
         self.query_period_var = tk.StringVar()
         self.status_var = tk.StringVar(value=f"Origen ventas: {backend.VENTAS_DB} | Destino RRHH: {backend.RRHH_DB}")
@@ -165,8 +165,8 @@ class BonusQueryUI(tk.Tk):
         ttk.Label(
             environment,
             text=(
-                "Ventana de ventas: desde el dia 15 del mes anterior hasta el dia 14 del periodo. "
-                "Esta consola no reemplaza RRHH; solo deja trazado externo del bono aplicado."
+                "Ventana de ventas: desde el dia 1 hasta el ultimo dia del periodo. "
+                "RRHH paga en la primera semana del mes siguiente, previa revision humana."
             ),
             wraplength=260,
             justify="left",
@@ -180,7 +180,7 @@ class BonusQueryUI(tk.Tk):
 
         metric_specs = [
             ("Periodo operativo", "periodo"),
-            ("Ventana de ventas", "ventana"),
+            ("Calendario operativo", "ventana"),
             ("Regla", "regla"),
             ("Resultado", "resultado"),
         ]
@@ -227,8 +227,9 @@ class BonusQueryUI(tk.Tk):
 
     def _set_period_context(self, period: str) -> None:
         sales_start, sales_cutoff = backend.sales_window(period)
+        payment_start, payment_end = backend.payment_window_for_period(period)
         self.metric_vars["periodo"].set(period)
-        self.metric_vars["ventana"].set(f"{sales_start} a {sales_cutoff}")
+        self.metric_vars["ventana"].set(f"Ventas: {sales_start} a {sales_cutoff} | Pago: {payment_start} a {payment_end}")
 
     def _show_error(self, message: str) -> None:
         self.status_var.set(message)
@@ -297,7 +298,7 @@ class BonusQueryUI(tk.Tk):
         ]
         self._show_table(
             f"Resultado de integracion {period}",
-            "Trabajadores elegibles segun ventas del periodo. El bono se escribe externamente y RRHH solo recibira el monto final actualizado.",
+            "Trabajadores elegibles segun ventas del mes. El bono se escribe antes de la ventana de pago del mes siguiente.",
             [
                 ("codigo_empleado", "Codigo"),
                 ("nombre", "Nombre"),
@@ -346,7 +347,7 @@ class BonusQueryUI(tk.Tk):
             {
                 "trabajador_codigo": row["trabajador_codigo"],
                 "nombre": row["nombre"],
-                "fecha_pago": row["fecha_pago"],
+                "ventana_pago": f"{row['fecha_pago']} a {row['fecha_pago_fin']}",
                 "bono_monto": f"{row['bono_monto']:.2f}",
                 "monto_pagar": f"{row['monto_pagar']:.2f}",
                 "estado": row["estado"],
@@ -359,7 +360,7 @@ class BonusQueryUI(tk.Tk):
             [
                 ("trabajador_codigo", "Codigo"),
                 ("nombre", "Nombre"),
-                ("fecha_pago", "Fecha pago"),
+                ("ventana_pago", "Ventana pago"),
                 ("bono_monto", "Bono"),
                 ("monto_pagar", "Monto a pagar"),
                 ("estado", "Estado"),
@@ -381,7 +382,7 @@ class BonusQueryUI(tk.Tk):
             self._show_error(f"No se pudieron consultar los bonos: {exc}")
             return
 
-        context_period = period or (rows[0]["periodo"][:7] if rows else datetime.now().strftime("%Y-%m"))
+        context_period = period or (rows[0]["periodo"][:7] if rows else backend.execution_period())
         self._set_period_context(context_period)
         self.metric_vars["resultado"].set(f"{len(rows)} coincidencia(s)")
         data = [
@@ -389,7 +390,7 @@ class BonusQueryUI(tk.Tk):
                 "trabajador_codigo": row["trabajador_codigo"],
                 "nombre": row["nombre"],
                 "periodo": row["periodo"][:7],
-                "fecha_pago": row["fecha_pago"],
+                "ventana_pago": f"{row['fecha_pago']} a {row['fecha_pago_fin']}",
                 "bono_monto": f"{row['bono_monto']:.2f}",
                 "monto_pagar": f"{row['monto_pagar']:.2f}",
                 "estado": row["estado"],
@@ -404,7 +405,7 @@ class BonusQueryUI(tk.Tk):
                 ("trabajador_codigo", "Codigo"),
                 ("nombre", "Nombre"),
                 ("periodo", "Periodo"),
-                ("fecha_pago", "Fecha pago"),
+                ("ventana_pago", "Ventana pago"),
                 ("bono_monto", "Bono"),
                 ("monto_pagar", "Monto a pagar"),
                 ("estado", "Estado"),

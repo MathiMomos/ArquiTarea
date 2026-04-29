@@ -1,3 +1,4 @@
+import calendar
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row, connect
@@ -20,12 +21,9 @@ VENTAS_THRESHOLD = 10000.00
 BONUS_AMOUNT = 500.00
 BONUS_CONCEPT_CODE = "BONO_EXTRA"
 BONUS_CONCEPT_NAME = "Bono extra"
-SALES_WINDOW_START_DAY = 15
-SALES_CUTOFF_DAY = 14
-EXECUTION_DAY = 15
-EXECUTION_HOUR = 3
-PAYMENT_DAY = 15
-PAYMENT_HOUR = 8
+EXECUTION_DAY = 1
+EXECUTION_HOUR = 2
+PAYMENT_WINDOW_END_DAY = 7
 
 def period_start_date(period: str) -> str:
     year, month = map(int, period.split("-"))
@@ -33,15 +31,33 @@ def period_start_date(period: str) -> str:
 
 
 def sales_window(period: str) -> tuple[str, str]:
-    period_date = date.fromisoformat(period_start_date(period))
-    previous_month_last_day = period_date - timedelta(days=1)
-    sales_start = datetime.combine(previous_month_last_day.replace(day=SALES_WINDOW_START_DAY), time()).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    sales_cutoff = datetime.combine(period_date.replace(day=SALES_CUTOFF_DAY), time(22, 0, 0)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    year, month = map(int, period.split("-"))
+    last_day = calendar.monthrange(year, month)[1]
+    sales_start = datetime(year, month, 1, 0, 0, 0).strftime("%Y-%m-%d %H:%M:%S")
+    sales_cutoff = datetime(year, month, last_day, 23, 59, 59).strftime("%Y-%m-%d %H:%M:%S")
     return sales_start, sales_cutoff
+
+
+def previous_month_period(reference: date | None = None) -> str:
+    reference = reference or date.today()
+    first_day = reference.replace(day=1)
+    previous_month_last_day = first_day - timedelta(days=1)
+    return previous_month_last_day.strftime("%Y-%m")
+
+
+def execution_period(reference: datetime | None = None) -> str:
+    reference = reference or datetime.now()
+    return previous_month_period(reference.date())
+
+
+def payment_window_for_period(period: str) -> tuple[str, str]:
+    year, month = map(int, period.split("-"))
+    if month == 12:
+        payment_start = date(year + 1, 1, 1)
+    else:
+        payment_start = date(year, month + 1, 1)
+    payment_end = payment_start.replace(day=PAYMENT_WINDOW_END_DAY)
+    return payment_start.isoformat(), payment_end.isoformat()
 
 
 def connect_database(path: Path) -> Connection:
@@ -102,6 +118,8 @@ def get_payments_by_employee(
             p.id,
             p.trabajador_codigo,
             p.estado,
+            p.fecha_pago,
+            p.fecha_pago_fin,
             COALESCE(pc.monto, 0) AS bonus_amount
         FROM pagos p
         LEFT JOIN pago_conceptos pc
@@ -153,6 +171,7 @@ def fetch_bonus_payments(
             t.nombre,
             p.periodo,
             p.fecha_pago,
+            p.fecha_pago_fin,
             p.estado,
             ROUND(pc.monto, 2) AS bono_monto,
             ROUND(COALESCE(SUM(CASE WHEN all_c.tipo = 'ingreso' THEN all_pc.monto ELSE -all_pc.monto END), 0), 2) AS monto_pagar
@@ -165,7 +184,7 @@ def fetch_bonus_payments(
         LEFT JOIN conceptos_pago all_c ON all_c.codigo = all_pc.concepto_codigo
         WHERE p.trabajador_codigo = ?
           {period_filter}
-        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado, pc.monto
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.fecha_pago_fin, p.estado, pc.monto
         ORDER BY p.periodo DESC
         """,
         params,
@@ -183,6 +202,7 @@ def fetch_bonus_period_payments(
             t.nombre,
             p.periodo,
             p.fecha_pago,
+            p.fecha_pago_fin,
             p.estado,
             ROUND(pc.monto, 2) AS bono_monto,
             ROUND(COALESCE(SUM(CASE WHEN all_c.tipo = 'ingreso' THEN all_pc.monto ELSE -all_pc.monto END), 0), 2) AS monto_pagar
@@ -194,7 +214,7 @@ def fetch_bonus_period_payments(
         LEFT JOIN pago_conceptos all_pc ON all_pc.pago_id = p.id
         LEFT JOIN conceptos_pago all_c ON all_c.codigo = all_pc.concepto_codigo
         WHERE p.periodo = ?
-        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado, pc.monto
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.fecha_pago_fin, p.estado, pc.monto
         ORDER BY p.trabajador_codigo
         """,
         (BONUS_CONCEPT_CODE, period_start_date(period)),
@@ -276,6 +296,7 @@ def print_result(
     updated_codes: set[str],
 ) -> None:
     sales_start, sales_cutoff = sales_window(period)
+    payment_start, payment_end = payment_window_for_period(period)
     print(f"Integracion ejecutada para el periodo {period}")
     print(f"Fecha de ejecucion usada: {executed_at.isoformat(sep=' ', timespec='seconds')}")
     print(
@@ -283,8 +304,8 @@ def print_result(
         f"Regla: ventas > {VENTAS_THRESHOLD:.2f} => bono fijo {BONUS_AMOUNT:.2f}."
     )
     print(
-        f"Ventana sugerida: dia {EXECUTION_DAY} a las {EXECUTION_HOUR:02d}:00; "
-        f"pago RRHH dia {PAYMENT_DAY} a las {PAYMENT_HOUR:02d}:00."
+        f"Ventana sugerida: cron dia {EXECUTION_DAY} a las {EXECUTION_HOUR:02d}:00; "
+        f"pago RRHH con revision humana entre {payment_start} y {payment_end}."
     )
     print()
 
@@ -307,7 +328,7 @@ def print_result(
 
 def main() -> None:
     executed_at = datetime.now().replace(microsecond=0)
-    period = executed_at.strftime("%Y-%m")
+    period = execution_period(executed_at)
 
     with connect_database(VENTAS_DB) as sales_connection, connect_database(RRHH_DB) as hr_connection:
         try:

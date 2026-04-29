@@ -19,13 +19,25 @@ DEMO_TRABAJADORES = (
     ("E002", "Bruno Diaz", "Caja", 1),
     ("E003", "Carla Perez", "Caja", 1),
     ("E004", "Diego Rojas", "Supervision", 1),
+    ("E005", "Elena Torres", "Caja", 1),
+    ("E006", "Fabian Castro", "Caja", 1),
+    ("E007", "Gabriela Ruiz", "Caja", 1),
+    ("E008", "Hugo Mendoza", "Caja", 1),
+    ("E009", "Ines Salazar", "Plataforma", 1),
+    ("E010", "Jorge Vargas", "Caja", 1),
 )
 
 DEMO_VENTAS = {
-    "E001": ((5, 9, 15, 4200.00), (12, 13, 10, 3900.00), (14, 21, 30, 4400.00)),
+    "E001": ((3, 9, 15, 4200.00), (12, 13, 10, 3900.00), (26, 17, 30, 4400.00)),
     "E002": ((7, 10, 0, 2800.00), (15, 11, 20, 2500.00), (22, 16, 40, 3000.00)),
-    "E003": ((2, 8, 50, 6100.00), (8, 14, 5, 5400.00), (14, 20, 45, 6200.00)),
+    "E003": ((2, 8, 50, 6100.00), (8, 14, 5, 5400.00), (29, 20, 45, 6200.00)),
     "E004": ((10, 9, 15, 4000.00), (17, 15, 30, 3500.00), (25, 18, 0, 2500.00)),
+    "E005": ((4, 10, 10, 3800.00), (18, 12, 40, 3600.00), (27, 18, 15, 3400.00)),
+    "E006": ((6, 9, 20, 1800.00), (13, 16, 0, 2100.00), (21, 11, 35, 1900.00)),
+    "E007": ((5, 8, 30, 5200.00), (16, 14, 25, 5100.00), (30, 19, 10, 4800.00)),
+    "E008": ((9, 11, 45, 2600.00), (19, 15, 0, 2950.00), (24, 17, 50, 3100.00)),
+    "E009": ((11, 10, 15, 3300.00), (20, 13, 40, 2900.00), (28, 16, 20, 3150.00)),
+    "E010": ((1, 9, 5, 4700.00), (14, 12, 55, 3600.00), (31, 18, 35, 2500.00)),
 }
 
 
@@ -123,20 +135,23 @@ def insert_demo_data(connection: sqlite3.Connection, period: str) -> int:
         DEMO_TRABAJADORES,
     )
 
-    existing_rows = connection.execute(
-        "SELECT COUNT(*) AS total FROM ventas WHERE strftime('%Y-%m', fecha) = ?",
-        (period,),
-    ).fetchone()["total"]
-    if existing_rows:
-        connection.commit()
-        return 0
-
     inserted = 0
     for worker_code, sales in DEMO_VENTAS.items():
         for day, hour, minute, amount in sales:
+            sale_timestamp = sale_timestamp_in_period(period, day, hour, minute)
+            existing_sale = connection.execute(
+                """
+                SELECT 1
+                FROM ventas
+                WHERE trabajador_codigo = ? AND fecha = ? AND monto = ?
+                """,
+                (worker_code, sale_timestamp, amount),
+            ).fetchone()
+            if existing_sale is not None:
+                continue
             connection.execute(
                 "INSERT INTO ventas (trabajador_codigo, fecha, monto) VALUES (?, ?, ?)",
-                (worker_code, sale_timestamp_in_period(period, day, hour, minute), amount),
+                (worker_code, sale_timestamp, amount),
             )
             inserted += 1
 

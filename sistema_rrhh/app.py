@@ -12,7 +12,7 @@ def default_db_path() -> Path:
 
 
 DB_PATH = default_db_path()
-PAYMENT_DAY = 15
+PAYMENT_WINDOW_END_DAY = 7
 BASE_CONCEPT_CODE = "SUELDO_BASE"
 MOBILITY_CONCEPT_CODE = "MOVILIDAD"
 FOOD_CONCEPT_CODE = "ALIMENTACION"
@@ -26,6 +26,12 @@ DEMO_TRABAJADORES = (
     ("E002", "Bruno Diaz", 2300.00, 1),
     ("E003", "Carla Perez", 2800.00, 1),
     ("E004", "Diego Rojas", 2200.00, 1),
+    ("E005", "Elena Torres", 2400.00, 1),
+    ("E006", "Fabian Castro", 2100.00, 1),
+    ("E007", "Gabriela Ruiz", 2900.00, 1),
+    ("E008", "Hugo Mendoza", 2250.00, 1),
+    ("E009", "Ines Salazar", 2350.00, 1),
+    ("E010", "Jorge Vargas", 2550.00, 1),
 )
 
 DEFAULT_PAYMENT_CONCEPTS = (
@@ -48,6 +54,10 @@ def current_period(reference: date | None = None) -> str:
     return reference.strftime("%Y-%m")
 
 
+def default_payroll_period(reference: date | None = None) -> str:
+    return previous_month_period(reference)
+
+
 def validate_period(period: str) -> str:
     try:
         datetime.strptime(period, "%Y-%m")
@@ -63,11 +73,14 @@ def period_start_date(period: str) -> str:
 
 def payment_date_for_period(period: str) -> str:
     year, month = map(int, period.split("-"))
-    return date(year, month, PAYMENT_DAY).isoformat()
+    if month == 12:
+        return date(year + 1, 1, 1).isoformat()
+    return date(year, month + 1, 1).isoformat()
 
 
-def payment_date_for_period_date(period_date: str) -> str:
-    return payment_date_for_period(period_date[:7])
+def payment_window_end_for_period(period: str) -> str:
+    payment_start = date.fromisoformat(payment_date_for_period(period))
+    return payment_start.replace(day=PAYMENT_WINDOW_END_DAY).isoformat()
 
 
 def connect() -> sqlite3.Connection:
@@ -75,19 +88,6 @@ def connect() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
-
-
-def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
-    row = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-def table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
-    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return {row["name"] for row in rows}
 
 
 def create_workers_schema(connection: sqlite3.Connection) -> None:
@@ -111,6 +111,7 @@ def create_payment_schema(connection: sqlite3.Connection) -> None:
             trabajador_codigo TEXT NOT NULL,
             periodo TEXT NOT NULL,
             fecha_pago TEXT NOT NULL,
+            fecha_pago_fin TEXT NOT NULL,
             estado TEXT NOT NULL DEFAULT 'pendiente',
             UNIQUE (trabajador_codigo, periodo),
             FOREIGN KEY (trabajador_codigo) REFERENCES trabajadores(codigo_empleado)
@@ -150,6 +151,7 @@ def create_payment_schema(connection: sqlite3.Connection) -> None:
             t.nombre AS trabajador_nombre,
             p.periodo,
             p.fecha_pago,
+            p.fecha_pago_fin,
             p.estado,
             c.codigo AS concepto_codigo,
             c.nombre AS concepto_nombre,
@@ -168,6 +170,7 @@ def create_payment_schema(connection: sqlite3.Connection) -> None:
             t.nombre AS trabajador_nombre,
             p.periodo,
             p.fecha_pago,
+            p.fecha_pago_fin,
             p.estado,
             ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE 0 END), 0), 2) AS total_ingresos,
             ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'descuento' THEN pc.monto ELSE 0 END), 0), 2) AS total_descuentos,
@@ -176,7 +179,7 @@ def create_payment_schema(connection: sqlite3.Connection) -> None:
         INNER JOIN trabajadores t ON t.codigo_empleado = p.trabajador_codigo
         LEFT JOIN pago_conceptos pc ON pc.pago_id = p.id
         LEFT JOIN conceptos_pago c ON c.codigo = pc.concepto_codigo
-        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado;
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.fecha_pago_fin, p.estado;
         """
     )
 
@@ -229,65 +232,11 @@ def sync_payment_breakdown(connection: sqlite3.Connection, payment_id: int, suel
         )
 
 
-def has_legacy_payment_schema(connection: sqlite3.Connection) -> bool:
-    if not table_exists(connection, "pagos"):
-        return False
-    return "sueldo_base" in table_columns(connection, "pagos")
-
-
-def migrate_legacy_payment_schema(connection: sqlite3.Connection) -> None:
-    legacy_rows = connection.execute(
-        """
-        SELECT id, trabajador_codigo, periodo, fecha_pago, sueldo_base, estado
-        FROM pagos
-        ORDER BY id
-        """
-    ).fetchall()
-
-    connection.execute("ALTER TABLE pagos RENAME TO pagos_legacy")
-    create_payment_schema(connection)
-    ensure_default_payment_concepts(connection)
-
-    for row in legacy_rows:
-        normalized_period = row["periodo"] if len(row["periodo"]) == 10 else period_start_date(row["periodo"])
-        payment_date = payment_date_for_period_date(normalized_period)
-        connection.execute(
-            """
-            INSERT INTO pagos (id, trabajador_codigo, periodo, fecha_pago, estado)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (row["id"], row["trabajador_codigo"], normalized_period, payment_date, row["estado"]),
-        )
-        sync_payment_breakdown(connection, row["id"], row["sueldo_base"])
-
-    connection.execute("DROP TABLE pagos_legacy")
-
-
 def create_schema(connection: sqlite3.Connection) -> None:
     create_workers_schema(connection)
-    if has_legacy_payment_schema(connection):
-        migrate_legacy_payment_schema(connection)
     create_payment_schema(connection)
     ensure_default_payment_concepts(connection)
-    normalize_payment_periods(connection)
     connection.commit()
-
-
-def normalize_payment_periods(connection: sqlite3.Connection) -> None:
-    legacy_rows = connection.execute(
-        """
-        SELECT id, periodo, fecha_pago
-        FROM pagos
-        WHERE length(periodo) = 7 OR substr(fecha_pago, 1, 7) != substr(periodo, 1, 7)
-        """
-    ).fetchall()
-
-    for row in legacy_rows:
-        normalized_period = row["periodo"] if len(row["periodo"]) == 10 else period_start_date(row["periodo"])
-        connection.execute(
-            "UPDATE pagos SET periodo = ?, fecha_pago = ? WHERE id = ?",
-            (normalized_period, payment_date_for_period_date(normalized_period), row["id"]),
-        )
 
 
 def insert_demo_data(connection: sqlite3.Connection, period: str) -> tuple[int, int]:
@@ -311,6 +260,7 @@ def generate_payments(connection: sqlite3.Connection, period: str) -> int:
     create_schema(connection)
     period_date = period_start_date(period)
     payment_date = payment_date_for_period(period)
+    payment_window_end = payment_window_end_for_period(period)
     workers = connection.execute(
         """
         SELECT codigo_empleado, sueldo_base
@@ -328,13 +278,15 @@ def generate_payments(connection: sqlite3.Connection, period: str) -> int:
                 trabajador_codigo,
                 periodo,
                 fecha_pago,
+                fecha_pago_fin,
                 estado
-            ) VALUES (?, ?, ?, 'pendiente')
+            ) VALUES (?, ?, ?, ?, 'pendiente')
             """,
             (
                 worker["codigo_empleado"],
                 period_date,
                 payment_date,
+                payment_window_end,
             ),
         )
         payment_row = connection.execute(
@@ -372,6 +324,7 @@ def fetch_payments(connection: sqlite3.Connection, period: str) -> list[sqlite3.
             t.nombre,
             p.periodo,
             p.fecha_pago,
+            p.fecha_pago_fin,
             ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE -pc.monto END), 0), 2) AS monto_pagar,
             p.estado
         FROM pagos p
@@ -379,7 +332,7 @@ def fetch_payments(connection: sqlite3.Connection, period: str) -> list[sqlite3.
         LEFT JOIN pago_conceptos pc ON pc.pago_id = p.id
         LEFT JOIN conceptos_pago c ON c.codigo = pc.concepto_codigo
         WHERE p.periodo = ?
-        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.fecha_pago_fin, p.estado
         ORDER BY p.trabajador_codigo
         """,
         (period_date,),
@@ -404,12 +357,12 @@ def print_payments(rows: list[sqlite3.Row], period: str) -> None:
         return
 
     print(f"Pagos RRHH para el periodo {period}")
-    print("codigo | nombre        | monto pagar | fecha pago  | estado")
-    print("-------+---------------+-------------+-------------+----------")
+    print("codigo | nombre        | monto pagar | ventana pago             | estado")
+    print("-------+---------------+-------------+--------------------------+----------")
     for row in rows:
         print(
             f"{row['trabajador_codigo']:<6} | {row['nombre']:<13} | {row['monto_pagar']:>11.2f} | "
-            f"{row['fecha_pago']:<11} | {row['estado']}"
+            f"{row['fecha_pago']} a {row['fecha_pago_fin']} | {row['estado']}"
         )
 
 
@@ -420,13 +373,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init-db", help="Crea el esquema SQLite de RRHH.")
 
     seed_parser = subparsers.add_parser("seed-demo", help="Carga trabajadores y pagos demo.")
-    seed_parser.add_argument("--periodo", type=validate_period, default=current_period())
+    seed_parser.add_argument("--periodo", type=validate_period, default=default_payroll_period())
 
     payments_parser = subparsers.add_parser("generar-pagos", help="Genera pagos pendientes para un periodo.")
-    payments_parser.add_argument("--periodo", type=validate_period, default=current_period())
+    payments_parser.add_argument("--periodo", type=validate_period, default=default_payroll_period())
 
     list_payments = subparsers.add_parser("listar-pagos", help="Lista pagos de un periodo.")
-    list_payments.add_argument("--periodo", type=validate_period, default=current_period())
+    list_payments.add_argument("--periodo", type=validate_period, default=default_payroll_period())
 
     workers_parser = subparsers.add_parser("listar-trabajadores", help="Lista trabajadores de RRHH.")
     workers_parser.set_defaults(command="listar-trabajadores")

@@ -27,14 +27,16 @@ class RRHHUI(tk.Tk):
         self.minsize(1020, 640)
         self.configure(bg=SURFACE_BG)
 
-        self.period_var = tk.StringVar(value=backend.current_period())
+        self.period_var = tk.StringVar(value=backend.default_payroll_period())
         self.status_var = tk.StringVar(value=f"Base local: {backend.DB_PATH}")
         self.table_title_var = tk.StringVar(value="Control de nomina")
-        self.view_note_var = tk.StringVar(value="Consulta la nomina del periodo para revisar los montos a depositar.")
+        self.view_note_var = tk.StringVar(
+            value="Consulta la nomina del periodo devengado y la ventana de pago programada para revision humana."
+        )
         self.selection_var = tk.StringVar(value="Selecciona un registro para ver su detalle rapido.")
         self.metric_vars = {
             "periodo": tk.StringVar(value="-"),
-            "fecha_pago": tk.StringVar(value="-"),
+            "ventana_pago": tk.StringVar(value="-"),
             "pendientes": tk.StringVar(value="0"),
             "planilla": tk.StringVar(value="0.00"),
             "trabajadores": tk.StringVar(value="0"),
@@ -110,7 +112,7 @@ class RRHHUI(tk.Tk):
         payroll.grid(row=0, column=0, sticky="ew")
         payroll.columnconfigure(0, weight=1)
 
-        ttk.Label(payroll, text="Periodo operativo (YYYY-MM)").grid(row=0, column=0, sticky="w")
+        ttk.Label(payroll, text="Periodo devengado (YYYY-MM)").grid(row=0, column=0, sticky="w")
         ttk.Entry(payroll, textvariable=self.period_var).grid(row=1, column=0, sticky="ew", pady=(4, 10))
         ttk.Button(payroll, text="Ver pagos del periodo", command=self.show_payments).grid(row=2, column=0, sticky="ew")
         ttk.Button(payroll, text="Generar pagos pendientes", command=self.generate_payments).grid(
@@ -118,7 +120,7 @@ class RRHHUI(tk.Tk):
         )
         ttk.Label(
             payroll,
-            text="La pantalla muestra el monto final a depositar y el estado operativo del pago.",
+            text="La pantalla muestra el monto final y la ventana de pago del mes siguiente, previa revision humana.",
             wraplength=250,
             justify="left",
         ).grid(row=4, column=0, sticky="w", pady=(10, 0))
@@ -160,7 +162,7 @@ class RRHHUI(tk.Tk):
 
         metric_specs = [
             ("Periodo", "periodo"),
-            ("Fecha de pago", "fecha_pago"),
+            ("Ventana de pago", "ventana_pago"),
             ("Pagos pendientes", "pendientes"),
             ("Total planilla", "planilla"),
             ("Trabajadores activos", "trabajadores"),
@@ -215,7 +217,7 @@ class RRHHUI(tk.Tk):
         try:
             return self._ensure_period()
         except Exception:
-            return backend.current_period()
+            return backend.default_payroll_period()
 
     def _refresh_dashboard(self, period: str | None = None) -> None:
         period = period or self._safe_period()
@@ -231,7 +233,9 @@ class RRHHUI(tk.Tk):
         total_planilla = sum(float(row["monto_pagar"]) for row in payments) if payments else 0.0
         pending = sum(1 for row in payments if row["estado"] == "pendiente")
         self.metric_vars["periodo"].set(period)
-        self.metric_vars["fecha_pago"].set(backend.payment_date_for_period(period))
+        payment_start = backend.payment_date_for_period(period)
+        payment_end = backend.payment_window_end_for_period(period)
+        self.metric_vars["ventana_pago"].set(f"{payment_start} a {payment_end}")
         self.metric_vars["pendientes"].set(str(pending))
         self.metric_vars["planilla"].set(f"{total_planilla:.2f}")
         self.metric_vars["trabajadores"].set(str(sum(1 for row in workers if row["activo"])))
@@ -358,7 +362,7 @@ class RRHHUI(tk.Tk):
                 "trabajador_codigo": row["trabajador_codigo"],
                 "nombre": row["nombre"],
                 "periodo": row["periodo"][:7],
-                "fecha_pago": row["fecha_pago"],
+                "ventana_pago": f"{row['fecha_pago']} a {row['fecha_pago_fin']}",
                 "monto_pagar": f"{row['monto_pagar']:.2f}",
                 "estado": row["estado"],
             }
@@ -367,12 +371,12 @@ class RRHHUI(tk.Tk):
         self._refresh_dashboard(period)
         self._show_table(
             f"Nomina del periodo {period}",
-            "Vista operativa de pagos: RRHH expone el monto final a depositar y el estado del pago para cada trabajador.",
+            "Vista operativa de pagos: RRHH separa el periodo trabajado de la ventana real de pago del mes siguiente.",
             [
                 ("trabajador_codigo", "Codigo"),
                 ("nombre", "Nombre"),
                 ("periodo", "Periodo"),
-                ("fecha_pago", "Fecha pago"),
+                ("ventana_pago", "Ventana pago"),
                 ("monto_pagar", "Monto a pagar"),
                 ("estado", "Estado"),
             ],

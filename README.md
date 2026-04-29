@@ -33,12 +33,13 @@ No se crea una tercera base. La integracion existe solo como codigo Python.
 1. Solo se revisa al personal de `Caja`
 2. Umbral de ventas: `10000.00`
 3. Bono fijo: `500.00`
-4. El dia `14` a las `10:00 PM` se cierra la venta del mes para efectos del bono
-5. El script se ejecuta el dia `15` a las `03:00 AM`
-6. RRHH paga el dia `15` a las `08:00 AM`
-7. Se consideran las ventas desde el dia `15` del mes anterior hasta el cierre del dia `14` del mes actual
+4. El periodo de ventas va desde el dia `1` hasta el ultimo dia del mes
+5. El script batch se ejecuta el dia `1` de cada mes a las `02:00 AM`
+6. El batch procesa el periodo de ventas del mes anterior
+7. RRHH no paga el mismo dia del cierre comercial; paga durante la primera semana del mes siguiente, previa revision humana
+8. El calendario comercial y el calendario de pago son distintos: el `periodo` refleja el mes trabajado y la `ventana de pago` refleja cuando RRHH puede depositar
 
-Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acumuladas entre `15/04/2026` y `14/05/2026` y ajusta el pago que RRHH procesara ese mismo `15/05/2026` a las `08:00`.
+Ejemplo: si el script corre el `01/05/2026` a las `02:00`, revisa las ventas acumuladas entre `01/04/2026` y `30/04/2026`, y ajusta el pago pendiente de RRHH para el periodo `2026-04`. Ese pago queda programado dentro de la ventana `01/05/2026` a `07/05/2026`.
 
 ## Estructura
 
@@ -76,16 +77,17 @@ Ejemplo: si el script corre el `15/05/2026` a las `03:00`, revisa las ventas acu
 3. guarda cada pago con una cabecera en `pagos` y sus montos en `pago_conceptos`
 4. administra internamente el catalogo de `conceptos_pago`, con conceptos base como `SUELDO_BASE`, `MOVILIDAD`, `ALIMENTACION` y `DESCUENTO_AFP`
 5. guarda el `periodo` como fecha completa del primer dia del mes, por ejemplo `2026-06-01`
-6. deja los pagos en estado `pendiente`
-7. calcula el monto a pagar sumando ingresos y restando descuentos
-8. ofrece una interfaz de escritorio propia para operar el sistema sin usar otra aplicacion
-9. expone vistas SQL `vw_detalle_pagos` y `vw_resumen_pagos` para revisar detalle por concepto y monto final desde la base
+6. separa el `periodo` trabajado de la ventana real de pago mediante `fecha_pago` y `fecha_pago_fin`
+7. deja los pagos en estado `pendiente` para permitir revision humana antes del deposito
+8. calcula el monto a pagar sumando ingresos y restando descuentos
+9. ofrece una interfaz de escritorio propia para operar el sistema sin usar otra aplicacion
+10. expone vistas SQL `vw_detalle_pagos` y `vw_resumen_pagos` para revisar detalle por concepto y monto final desde la base
 
 ### `integracion/aplicar_bonos.py`
 
 1. toma la fecha actual del sistema
-2. toma el mes actual como periodo de pago
-3. lee las ventas acumuladas desde el dia 15 del mes anterior hasta el dia 14 de ese mes
+2. toma el mes anterior como periodo de ventas a procesar
+3. lee las ventas acumuladas desde el dia 1 hasta el ultimo dia de ese mes
 4. selecciona trabajadores de `Caja` que superan el umbral
 5. verifica que `BONO_EXTRA` ya exista en RRHH
 6. busca esos codigos en RRHH
@@ -212,6 +214,44 @@ Ejecutar integracion:
 python integracion/aplicar_bonos.py
 ```
 
+## Demo en vivo
+
+Si se quiere mostrar el flujo en vivo sin esperar al cron real, se puede ejecutar manualmente.
+
+Preparar el concepto `BONO_EXTRA` en RRHH:
+
+```bash
+python integracion/preparar_concepto_bono.py
+```
+
+Ejecutar manualmente el proceso batch de bonos:
+
+```bash
+python integracion/aplicar_bonos.py
+```
+
+Importante:
+
+1. `aplicar_bonos.py` simula el cronjob, pero usa la fecha actual del sistema para decidir que periodo procesar.
+2. Con la regla actual, ese script toma el mes anterior al actual.
+3. Si se necesita elegir el periodo manualmente durante la exposicion, lo mas comodo es usar `integracion/bonos_ui.py`.
+
+Abrir la consola externa para demo manual por periodo:
+
+```bash
+python integracion/bonos_ui.py
+```
+
+Flujo recomendado para exponer en vivo:
+
+1. Inicializar ventas y RRHH.
+2. Cargar demo para un periodo conocido, por ejemplo `2026-03`.
+3. Abrir `integracion/bonos_ui.py`.
+4. Indicar el periodo a procesar.
+5. Ejecutar `Preparar concepto bono`.
+6. Ejecutar `Ejecutar integracion`.
+7. Mostrar `Ver bonos del periodo` o revisar `sistema_rrhh/app.py listar-pagos --periodo 2026-03`.
+
 ## Observaciones
 
 1. En RRHH puede haber otros trabajadores y otros pagos, pero el script solo toca a quienes aparecen en ventas y pertenecen a `Caja`.
@@ -220,9 +260,10 @@ python integracion/aplicar_bonos.py
 4. RRHH muestra el monto final a pagar; el detalle especifico del bono se consulta desde `integracion/bonos_ui.py`.
 5. `aplicar_bonos.py` no pide argumentos. Usa la fecha actual del sistema para calcular el periodo a procesar.
 6. Si se quiere forzar otro periodo, se puede usar `integracion/bonos_ui.py` y ejecutar la integracion para el mes deseado.
-7. La idea es programar el script en `Task Scheduler` en Windows o con `cron`/`systemd timer` en Linux para el dia 15 a las 03:00 AM.
+7. La idea es programar el script en `Task Scheduler` en Windows o con `cron`/`systemd timer` en Linux para el dia 1 a las 02:00 AM.
 8. Las interfaces de `ventas` y `RRHH` son independientes; ninguna llama directamente a la otra.
 9. La integracion sigue siendo externa y batch: el unico punto de cruce es `integracion/aplicar_bonos.py`.
 10. `build_exes.py` empaqueta los dos monolitos como aplicaciones de escritorio separadas para el sistema operativo donde se ejecute el build.
 11. Para abrir las interfaces con Python en Linux, normalmente hace falta tener instalado `tkinter` desde el paquete del sistema, por ejemplo `python3-tk`.
 12. En Ubuntu o Debian, si aparece el error `No module named tkinter`, instalalo con `sudo apt update && sudo apt install python3-tk`.
+13. Los datos demo ahora incluyen mas cajeros y los mismos codigos de empleado en ambos sistemas para que la integracion sea mas facil de explicar en la exposicion.
