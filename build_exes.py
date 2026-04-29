@@ -12,6 +12,8 @@ SPEC_DIR = ROOT / "build" / "spec"
 APPS = (
     ("ventas_desktop.py", "SistemaVentas", ROOT / "sistema_ventas" / "ventas.db", DIST_DIR / "ventas.db"),
     ("rrhh_desktop.py", "SistemaRRHH", ROOT / "sistema_rrhh" / "rrhh.db", DIST_DIR / "rrhh.db"),
+    ("integracion/aplicar_bonos.py", "AplicarBonos"),
+    ("integracion/preparar_concepto_bono.py", "PrepararBono"),
 )
 
 
@@ -21,6 +23,8 @@ def built_app_path(name: str) -> Path:
 
 
 def build_app(entrypoint: str, name: str) -> None:
+    is_console = "integracion/" in entrypoint
+
     command = [
         sys.executable,
         "-m",
@@ -28,7 +32,6 @@ def build_app(entrypoint: str, name: str) -> None:
         "--noconfirm",
         "--clean",
         "--onefile",
-        "--windowed",
         "--name",
         name,
         "--distpath",
@@ -37,8 +40,11 @@ def build_app(entrypoint: str, name: str) -> None:
         str(WORK_DIR),
         "--specpath",
         str(SPEC_DIR),
-        str(ROOT / entrypoint),
     ]
+    if not is_console:
+        command.append("--windowed")
+
+    command.append(str(ROOT / entrypoint))
     subprocess.run(command, cwd=ROOT, check=True)
 
 
@@ -59,14 +65,19 @@ def main() -> None:
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     SPEC_DIR.mkdir(parents=True, exist_ok=True)
 
-    for entrypoint, name, source_db, target_db in APPS:
+    for app in APPS:
+        entrypoint = app[0]
+        name = app[1]
         print(f"Generando {built_app_path(name).name}...")
         build_app(entrypoint, name)
-        copy_database(source_db, target_db)
+        if len(app) == 4:
+            source_db = app[2]
+            target_db = app[3]
+            copy_database(source_db, target_db)
 
     print("Build finalizado.")
-    for _, name, _, _ in APPS:
-        print(built_app_path(name))
+    for app in APPS:
+        print(built_app_path(app[1]))
 
 
 if __name__ == "__main__":

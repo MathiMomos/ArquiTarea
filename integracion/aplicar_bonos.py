@@ -1,3 +1,4 @@
+import argparse
 import calendar
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -5,16 +6,73 @@ from sqlite3 import Connection, Row, connect
 import sys
 
 
-def database_paths() -> tuple[Path, Path]:
+def resolve_database_paths(
+    ventas_db_override: Path | None = None,
+    rrhh_db_override: Path | None = None,
+    use_dev: bool = False,
+) -> tuple[Path, Path]:
+    if ventas_db_override and rrhh_db_override:
+        return ventas_db_override, rrhh_db_override
+
     if getattr(sys, "frozen", False):
         root = Path(sys.executable).resolve().parent
         return root / "ventas.db", root / "rrhh.db"
 
-    root = Path(__file__).resolve().parent.parent
-    return root / "sistema_ventas" / "ventas.db", root / "sistema_rrhh" / "rrhh.db"
+    repo_root = Path(__file__).resolve().parent.parent
+    dist_dir = repo_root / "dist"
+
+    if use_dev:
+        return repo_root / "sistema_ventas" / "ventas.db", repo_root / "sistema_rrhh" / "rrhh.db"
+
+    return dist_dir / "ventas.db", dist_dir / "rrhh.db"
 
 
-VENTAS_DB, RRHH_DB = database_paths()
+def parse_args() -> tuple[argparse.Namespace, Path, Path]:
+    parser = argparse.ArgumentParser(description="Aplicar bonos a empleados basados en ventas")
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Usar bases de datos de desarrollo (sistema_ventas/ventas.db, sistema_rrhh/rrhh.db)",
+    )
+    parser.add_argument(
+        "--dist",
+        action="store_true",
+        help="Usar bases de datos en dist/ (default si no se especifica --dev)",
+    )
+    parser.add_argument(
+        "--ventas-db",
+        type=Path,
+        help="Ruta personalizada a la base de datos de ventas",
+    )
+    parser.add_argument(
+        "--rrhh-db",
+        type=Path,
+        help="Ruta personalizada a la base de datos de RRHH",
+    )
+    parser.add_argument(
+        "--periodo",
+        type=str,
+        help="Periodo a procesar en formato YYYY-MM (default: mes anterior)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simular la ejecución sin escribir cambios en la base de datos",
+    )
+
+    args = parser.parse_args()
+
+    ventas_override = Path(args.ventas_db) if args.ventas_db else None
+    rrhh_override = Path(args.rrhh_db) if args.rrhh_db else None
+    VENTAS_DB, RRHH_DB = resolve_database_paths(ventas_override, rrhh_override, args.dev)
+
+    return args, VENTAS_DB, RRHH_DB
+
+
+args, VENTAS_DB, RRHH_DB = parse_args()
+
+DRY_RUN = args.dry_run
+PERIOD_OVERRIDE = args.periodo
 
 TARGET_AREA = "Caja"
 VENTAS_THRESHOLD = 10000.00
@@ -328,11 +386,20 @@ def print_result(
 
 def main() -> None:
     executed_at = datetime.now().replace(microsecond=0)
-    period = execution_period(executed_at)
+    period = PERIOD_OVERRIDE if PERIOD_OVERRIDE else execution_period(executed_at)
+
+    print(f"[INFO] Ventas DB: {VENTAS_DB}")
+    print(f"[INFO] RRHH DB: {RRHH_DB}")
+    print(f"[INFO] Periodo: {period}")
+    if DRY_RUN:
+        print("[DRY-RUN] Simulación activada, no se escribirán cambios.")
 
     with connect_database(VENTAS_DB) as sales_connection, connect_database(RRHH_DB) as hr_connection:
         try:
             eligible_workers, updated_codes = apply_bonus(sales_connection, hr_connection, period)
+            if DRY_RUN:
+                hr_connection.rollback()
+                print("[DRY-RUN] Cambios revertidos tras simulación.")
         except Exception as exc:
             raise SystemExit(f"La integracion fallo: {exc}") from exc
 
