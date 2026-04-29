@@ -267,3 +267,250 @@ Flujo recomendado para exponer en vivo:
 11. Para abrir las interfaces con Python en Linux, normalmente hace falta tener instalado `tkinter` desde el paquete del sistema, por ejemplo `python3-tk`.
 12. En Ubuntu o Debian, si aparece el error `No module named tkinter`, instalalo con `sudo apt update && sudo apt install python3-tk`.
 13. Los datos demo ahora incluyen mas cajeros y los mismos codigos de empleado en ambos sistemas para que la integracion sea mas facil de explicar en la exposicion.
+
+
+# Guion
+
+**1. Nic: Context and Architecture**
+
+“Good morning everyone.
+
+Today we are presenting a case of isolated systems and how they can be integrated without modifying their internal logic.
+
+In this project, we work with two separate systems.
+
+The first one is the Sales System. Its purpose is to register workers, store sales transactions, and generate monthly sales summaries. It operates independently and stores its information in its own local SQLite database.
+
+The second one is the HR System. Its purpose is to manage workers, generate payroll payments, and calculate the final amount that each employee should receive. It also works independently and has its own separate SQLite database.
+
+The important idea here is that these are isolated systems. That means they are independent monoliths. Each one has its own interface, its own business logic, and its own data storage. They do not call each other directly, they do not share a common application layer, and they are treated like black boxes.
+
+This kind of scenario is very realistic in real organizations. Many companies already have systems in production that cannot be easily modified, either because of technical limitations, lack of documentation, or operational risk.
+
+So the challenge in this project is not building one big integrated system from scratch. The challenge is connecting two systems that already exist and are intentionally separate.
+
+That is the context of our work.
+
+Now that we understand the architecture, the next step is to see how both systems behave independently.”
+
+**2. Mathias: Demonstration of the Isolated Systems**
+
+“Now I will briefly demonstrate the two systems to show how they work in isolation.
+
+First, this is the Sales System.
+
+In this system, we can initialize the local database, load demo data, register sales, list workers, and display monthly summaries. Its focus is purely commercial. It records who sold, when they sold, and how much they sold.
+
+Now, this is the HR System.
+
+This system is responsible for payroll. Here we can initialize the HR database, load workers, generate payroll payments for a specific period, and view the final amount that each worker should receive.
+
+What matters most in this demonstration is not only what each system does, but also what each system does not do.
+
+The Sales System does not know anything about payroll payments.
+It does not know whether a worker has already been paid.
+It does not know about payroll concepts like salary, deductions, or bonuses.
+
+At the same time, the HR System does not track monthly sales.
+It does not know which cashier exceeded the sales threshold.
+It only knows how to calculate and display payroll information.
+
+So even though both systems contain the same employee codes, they are still separated by design.
+They have different interfaces, different responsibilities, and different databases.
+
+This separation is exactly what creates the business problem we needed to solve.”
+
+**3. Leo: Business Problem and Functional Solution**
+
+“At this point, the business problem becomes clear.
+
+The institution wants to grant an extra bonus to workers in the Cashier area if they exceed a monthly sales threshold.
+
+From a business perspective, this rule is simple:
+if a cashier sells more than a certain amount during the month, they should receive an additional bonus.
+
+However, technically this becomes difficult because the required information is split across two isolated systems.
+
+The Sales System knows the sales performance.
+The HR System knows the payroll payment that will eventually be deposited.
+
+So the real problem is this:
+how can we use sales information to affect payroll, if both systems are isolated and we are not allowed to directly modify them?
+
+There is also an important functional rule in the final version of the project.
+
+We now separate the sales calendar from the payment calendar.
+
+The sales period goes from the first day of the month to the last day of the same month.
+For example, March sales are counted from March 1st to March 31st.
+
+Then, the integration is executed on the first day of the following month at 2:00 AM.
+That means the March sales are processed on April 1st.
+
+After that, HR does not immediately pay at the same moment.
+Instead, payroll remains in a payment window during the first week of the next month, from April 1st to April 7th, with human review before the final payment.
+
+So we are separating two timelines:
+the month in which the work and sales happened,
+and the later window in which payroll is actually reviewed and paid.
+
+To solve the problem, we created an external integration process.
+
+Instead of merging the two systems, we use a Python script as a bridge.
+This script reads the Sales database, identifies the eligible cashiers, then connects to the HR database and applies the bonus to the correct pending payroll record.
+
+This approach preserves the isolation of both systems while still solving the real business requirement.”
+
+**4. Alonsin: Technical Explanation of the Integration**
+
+“Now I will explain the technical side of the solution.
+
+The central component is the script called `aplicar_bonos.py`.
+
+Its job is to process one monthly sales period and write the bonus into the HR payroll data before the payment window is completed.
+
+The script begins by determining which period must be processed.
+In the final version of the project, it does not process the current month.
+It processes the previous month.
+So if the script runs on April 1st, it processes the sales period for March.
+
+After that, it calculates the sales window using the full calendar month.
+Technically, this means the query searches sales from the first day of the month at `00:00:00` until the last day of the month at `23:59:59`.
+
+Then the script runs a query against the Sales database.
+Conceptually, the query does the following:
+- joins sales with workers
+- filters only active workers
+- filters only workers in the `Caja`, or Cashier, area
+- restricts the rows to the selected monthly time window
+- groups the results by employee
+- sums the total sales
+- keeps only workers whose total sales exceed the threshold
+
+So this is not checking individual transactions one by one in application memory.
+The database is doing the aggregation through SQL using `SUM`, `GROUP BY`, and `HAVING`.
+
+This is important because it makes the filtering logic clearer and more scalable.
+
+Once the script gets the eligible workers, it extracts their employee codes.
+Then it moves to the HR database.
+
+In HR, the script first verifies that the payment concept `BONO_EXTRA` already exists.
+This is a validation step.
+The integration is not allowed to invent a payroll concept on the fly during the main execution.
+That concept must already be prepared in HR or through the external setup tool.
+
+After that, the script queries the `pagos` table to find the payroll record for each eligible employee for the corresponding payroll period.
+It also checks the current bonus amount, if one already exists, by joining with `pago_conceptos`.
+
+Technically, the script is looking for:
+- the employee’s payroll row for that period
+- a payment in `pendiente` status
+- and whether a `BONO_EXTRA` concept was already inserted
+
+This is very important because it prevents duplication.
+If the bonus was already applied for that employee and that month, the script does not insert it again.
+
+If the bonus is missing, the script either updates or inserts the `BONO_EXTRA` row in `pago_conceptos`.
+
+That means the script does not rewrite the whole payroll calculation.
+Instead, it uses the HR system’s own internal structure.
+HR already calculates final payment amounts from payroll concepts, so by inserting `BONO_EXTRA` as an income concept, the final amount automatically increases in a consistent way.
+
+This is one of the strongest parts of the design:
+the integration does not bypass HR logic,
+it works through HR’s existing payroll model.
+
+So, in summary, the technical flow is:
+identify eligible workers in Sales,
+map them by employee code,
+find their pending payroll in HR,
+validate the bonus concept,
+and then write the bonus as structured payroll data.”
+
+**5. Andres: Queries, Scheduling, UI, and Final Result**
+
+“I will explain how the integration is executed operationally, how the database result can be reviewed, and why this design makes sense in practice.
+
+First, this solution is implemented as a batch process.
+
+That means the integration is not triggered every time someone makes a sale.
+Instead, it runs at a scheduled moment after the monthly sales period has ended.
+
+In our project, the intended schedule is:
+the cron job runs on the first day of each month at 2:00 AM.
+
+For example:
+sales from March 1st to March 31st are processed on April 1st at 2:00 AM.
+
+This makes sense because the month is already closed, so the script can safely evaluate the full sales period.
+At the same time, HR still has time to review payroll before payments are actually made during the first week of the month.
+
+So the integration is designed around two separate business calendars:
+the commercial period,
+and the payroll payment window.
+
+From a technical perspective, the HR side also exposes the result in a structured way.
+
+The HR database contains:
+- `pagos`, which stores the payroll header for each worker and period
+- `pago_conceptos`, which stores individual payroll concepts like salary, mobility, food allowance, pension deduction, and now `BONO_EXTRA`
+- SQL views such as `vw_detalle_pagos` and `vw_resumen_pagos`, which make it easier to inspect the final result
+
+The bonus review UI is built on top of this integration layer.
+
+This external UI allows us to:
+- prepare the `BONO_EXTRA` concept
+- execute the integration manually if needed
+- list all bonuses applied for a given period
+- search bonuses by employee code
+- display the final payroll amount after the bonus has been applied
+
+Technically, when the bonus UI queries applied bonuses, it reads payroll rows that already contain the `BONO_EXTRA` concept and combines them with the payroll totals.
+So the UI is not guessing the result.
+It is reading the final state from the database after the integration.
+
+This gives us a clear audit trail.
+
+For example, after processing period `2026-03`, we can see:
+- which cashiers were eligible
+- the amount of bonus applied
+- the payment window in HR, such as `2026-04-01` to `2026-04-07`
+- and the updated final payroll amount
+
+That is useful both technically and operationally, because it allows verification before the final payment is completed.
+
+To conclude, this solution has several strengths:
+- it keeps both systems isolated
+- it solves a real cross-system business rule
+- it uses SQL aggregation and structured payroll concepts instead of fragile manual logic
+- it separates the sales period from the payment moment
+- and it leaves a transparent record of the applied bonuses
+
+Its main limitation is that it still depends on both systems using the same employee codes and having compatible period definitions.
+But given the constraint of isolated systems, this is a practical and well-structured solution.
+
+Thank you.”
+
+**Suggested transitions**
+- Nic to Mathias:
+  “Now that we understand the architecture, let’s see both systems working independently.”
+
+- Mathias to Leo:
+  “Once we see the systems in isolation, the business problem becomes much easier to understand.”
+
+- Leo to Alonsin:
+  “Now let’s move from the functional problem to the technical implementation.”
+
+- Alonsin to Andres:
+  “Finally, let’s see how this integration is scheduled, reviewed, and validated in practice.”
+
+**Extra recommendation**
+For the technical parts, especially `Alonsin` and `Andres`, it will sound stronger if the slide includes these keywords:
+- `JOIN`
+- `GROUP BY`
+- `HAVING`
+- `pending payment`
+- `payroll concepts`
+- `batch integration`
+- `payment window`
