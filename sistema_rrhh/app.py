@@ -13,13 +13,26 @@ def default_db_path() -> Path:
 
 DB_PATH = default_db_path()
 PAYMENT_DAY = 15
+BASE_CONCEPT_CODE = "SUELDO_BASE"
+MOBILITY_CONCEPT_CODE = "MOVILIDAD"
+FOOD_CONCEPT_CODE = "ALIMENTACION"
+PENSION_CONCEPT_CODE = "DESCUENTO_AFP"
+MOBILITY_AMOUNT = 180.00
+FOOD_AMOUNT = 120.00
+PENSION_RATE = 0.10
 
 DEMO_TRABAJADORES = (
     ("E001", "Ana Lopez", 2500.00, 1),
     ("E002", "Bruno Diaz", 2300.00, 1),
     ("E003", "Carla Perez", 2800.00, 1),
     ("E004", "Diego Rojas", 2200.00, 1),
-    ("E010", "Luisa Campos", 2100.00, 1),
+)
+
+DEFAULT_PAYMENT_CONCEPTS = (
+    (BASE_CONCEPT_CODE, "Sueldo base", "ingreso", 1),
+    (MOBILITY_CONCEPT_CODE, "Movilidad", "ingreso", 1),
+    (FOOD_CONCEPT_CODE, "Alimentacion", "ingreso", 1),
+    (PENSION_CONCEPT_CODE, "Descuento AFP", "descuento", 1),
 )
 
 
@@ -64,33 +77,162 @@ def connect() -> sqlite3.Connection:
     return connection
 
 
-def create_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript(
+def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def create_workers_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
         """
         CREATE TABLE IF NOT EXISTS trabajadores (
             codigo_empleado TEXT PRIMARY KEY,
             nombre TEXT NOT NULL,
             sueldo_base REAL NOT NULL CHECK (sueldo_base >= 0),
             activo INTEGER NOT NULL DEFAULT 1 CHECK (activo IN (0, 1))
-        );
+        )
+        """
+    )
 
+
+def create_payment_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
         CREATE TABLE IF NOT EXISTS pagos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             trabajador_codigo TEXT NOT NULL,
             periodo TEXT NOT NULL,
             fecha_pago TEXT NOT NULL,
-            sueldo_base REAL NOT NULL CHECK (sueldo_base >= 0),
-            bono_extra REAL NOT NULL DEFAULT 0 CHECK (bono_extra >= 0),
-            pago_final REAL NOT NULL CHECK (pago_final >= 0),
             estado TEXT NOT NULL DEFAULT 'pendiente',
             UNIQUE (trabajador_codigo, periodo),
             FOREIGN KEY (trabajador_codigo) REFERENCES trabajadores(codigo_empleado)
         );
 
+        CREATE TABLE IF NOT EXISTS conceptos_pago (
+            codigo TEXT PRIMARY KEY,
+            nombre TEXT NOT NULL,
+            tipo TEXT NOT NULL CHECK (tipo IN ('ingreso', 'descuento')),
+            activo INTEGER NOT NULL DEFAULT 1 CHECK (activo IN (0, 1))
+        );
+
+        CREATE TABLE IF NOT EXISTS pago_conceptos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pago_id INTEGER NOT NULL,
+            concepto_codigo TEXT NOT NULL,
+            monto REAL NOT NULL CHECK (monto >= 0),
+            UNIQUE (pago_id, concepto_codigo),
+            FOREIGN KEY (pago_id) REFERENCES pagos(id) ON DELETE CASCADE,
+            FOREIGN KEY (concepto_codigo) REFERENCES conceptos_pago(codigo)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pagos_periodo_trabajador
         ON pagos(periodo, trabajador_codigo);
+
+        CREATE INDEX IF NOT EXISTS idx_pago_conceptos_pago
+        ON pago_conceptos(pago_id);
+
+        CREATE INDEX IF NOT EXISTS idx_pago_conceptos_concepto
+        ON pago_conceptos(concepto_codigo);
         """
     )
+
+
+def ensure_payment_concept(
+    connection: sqlite3.Connection,
+    code: str,
+    name: str,
+    kind: str = "ingreso",
+    active: int = 1,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO conceptos_pago (codigo, nombre, tipo, activo)
+        VALUES (?, ?, ?, ?)
+        """,
+        (code, name, kind, active),
+    )
+
+
+def ensure_default_payment_concepts(connection: sqlite3.Connection) -> None:
+    connection.executemany(
+        """
+        INSERT OR IGNORE INTO conceptos_pago (codigo, nombre, tipo, activo)
+        VALUES (?, ?, ?, ?)
+        """,
+        DEFAULT_PAYMENT_CONCEPTS,
+    )
+
+
+def default_payment_breakdown(sueldo_base: float) -> tuple[tuple[str, float], ...]:
+    rounded_base = round(sueldo_base, 2)
+    return (
+        (BASE_CONCEPT_CODE, rounded_base),
+        (MOBILITY_CONCEPT_CODE, MOBILITY_AMOUNT),
+        (FOOD_CONCEPT_CODE, FOOD_AMOUNT),
+        (PENSION_CONCEPT_CODE, round(rounded_base * PENSION_RATE, 2)),
+    )
+
+
+def sync_payment_breakdown(connection: sqlite3.Connection, payment_id: int, sueldo_base: float) -> None:
+    for concept_code, amount in default_payment_breakdown(sueldo_base):
+        connection.execute(
+            """
+            INSERT INTO pago_conceptos (pago_id, concepto_codigo, monto)
+            VALUES (?, ?, ?)
+            ON CONFLICT(pago_id, concepto_codigo) DO UPDATE SET monto = excluded.monto
+            """,
+            (payment_id, concept_code, amount),
+        )
+
+
+def has_legacy_payment_schema(connection: sqlite3.Connection) -> bool:
+    if not table_exists(connection, "pagos"):
+        return False
+    return {"sueldo_base", "bono_extra", "pago_final"}.issubset(table_columns(connection, "pagos"))
+
+
+def migrate_legacy_payment_schema(connection: sqlite3.Connection) -> None:
+    legacy_rows = connection.execute(
+        """
+        SELECT id, trabajador_codigo, periodo, fecha_pago, sueldo_base, estado
+        FROM pagos
+        ORDER BY id
+        """
+    ).fetchall()
+
+    connection.execute("ALTER TABLE pagos RENAME TO pagos_legacy")
+    create_payment_schema(connection)
+    ensure_default_payment_concepts(connection)
+
+    for row in legacy_rows:
+        normalized_period = row["periodo"] if len(row["periodo"]) == 10 else period_start_date(row["periodo"])
+        payment_date = payment_date_for_period_date(normalized_period)
+        connection.execute(
+            """
+            INSERT INTO pagos (id, trabajador_codigo, periodo, fecha_pago, estado)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (row["id"], row["trabajador_codigo"], normalized_period, payment_date, row["estado"]),
+        )
+        sync_payment_breakdown(connection, row["id"], row["sueldo_base"])
+
+    connection.execute("DROP TABLE pagos_legacy")
+
+
+def create_schema(connection: sqlite3.Connection) -> None:
+    create_workers_schema(connection)
+    if has_legacy_payment_schema(connection):
+        migrate_legacy_payment_schema(connection)
+    create_payment_schema(connection)
+    ensure_default_payment_concepts(connection)
     normalize_payment_periods(connection)
     connection.commit()
 
@@ -116,8 +258,12 @@ def insert_demo_data(connection: sqlite3.Connection, period: str) -> tuple[int, 
     create_schema(connection)
     connection.executemany(
         """
-        INSERT OR IGNORE INTO trabajadores (codigo_empleado, nombre, sueldo_base, activo)
+        INSERT INTO trabajadores (codigo_empleado, nombre, sueldo_base, activo)
         VALUES (?, ?, ?, ?)
+        ON CONFLICT(codigo_empleado) DO UPDATE SET
+            nombre = excluded.nombre,
+            sueldo_base = excluded.sueldo_base,
+            activo = excluded.activo
         """,
         DEMO_TRABAJADORES,
     )
@@ -146,20 +292,24 @@ def generate_payments(connection: sqlite3.Connection, period: str) -> int:
                 trabajador_codigo,
                 periodo,
                 fecha_pago,
-                sueldo_base,
-                bono_extra,
-                pago_final,
                 estado
-            ) VALUES (?, ?, ?, ?, 0, ?, 'pendiente')
+            ) VALUES (?, ?, ?, 'pendiente')
             """,
             (
                 worker["codigo_empleado"],
                 period_date,
                 payment_date,
-                worker["sueldo_base"],
-                worker["sueldo_base"],
             ),
         )
+        payment_row = connection.execute(
+            """
+            SELECT id
+            FROM pagos
+            WHERE trabajador_codigo = ? AND periodo = ?
+            """,
+            (worker["codigo_empleado"], period_date),
+        ).fetchone()
+        sync_payment_breakdown(connection, payment_row["id"], worker["sueldo_base"])
         created += cursor.rowcount
 
     connection.commit()
@@ -186,16 +336,30 @@ def fetch_payments(connection: sqlite3.Connection, period: str) -> list[sqlite3.
             t.nombre,
             p.periodo,
             p.fecha_pago,
-            p.sueldo_base,
-            p.bono_extra,
-            p.pago_final,
+            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE 0 END), 0), 2) AS total_ingresos,
+            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'descuento' THEN pc.monto ELSE 0 END), 0), 2) AS total_descuentos,
+            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE -pc.monto END), 0), 2) AS pago_neto,
+            COUNT(pc.id) AS cantidad_conceptos,
             p.estado
         FROM pagos p
         INNER JOIN trabajadores t ON t.codigo_empleado = p.trabajador_codigo
+        LEFT JOIN pago_conceptos pc ON pc.pago_id = p.id
+        LEFT JOIN conceptos_pago c ON c.codigo = pc.concepto_codigo
         WHERE p.periodo = ?
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado
         ORDER BY p.trabajador_codigo
         """,
         (period_date,),
+    ).fetchall()
+
+
+def fetch_payment_concepts(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT codigo, nombre, tipo, activo
+        FROM conceptos_pago
+        ORDER BY tipo, codigo
+        """
     ).fetchall()
 
 
@@ -217,13 +381,26 @@ def print_payments(rows: list[sqlite3.Row], period: str) -> None:
         return
 
     print(f"Pagos RRHH para el periodo {period}")
-    print("codigo | nombre        | base    | bono    | final   | fecha pago  | estado")
-    print("-------+---------------+---------+---------+---------+-------------+----------")
+    print("codigo | nombre        | ingresos | desc.   | neto    | conceptos | fecha pago  | estado")
+    print("-------+---------------+----------+---------+---------+-----------+-------------+----------")
     for row in rows:
         print(
-            f"{row['trabajador_codigo']:<6} | {row['nombre']:<13} | {row['sueldo_base']:>7.2f} | "
-            f"{row['bono_extra']:>7.2f} | {row['pago_final']:>7.2f} | {row['fecha_pago']:<11} | {row['estado']}"
+            f"{row['trabajador_codigo']:<6} | {row['nombre']:<13} | {row['total_ingresos']:>8.2f} | "
+            f"{row['total_descuentos']:>7.2f} | {row['pago_neto']:>7.2f} | {row['cantidad_conceptos']:>9} | "
+            f"{row['fecha_pago']:<11} | {row['estado']}"
         )
+
+
+def print_payment_concepts(rows: list[sqlite3.Row]) -> None:
+    if not rows:
+        print("No hay conceptos de pago registrados en RRHH.")
+        return
+
+    print("codigo       | nombre               | tipo      | activo")
+    print("-------------+----------------------+-----------+-------")
+    for row in rows:
+        active = "si" if row["activo"] else "no"
+        print(f"{row['codigo']:<12} | {row['nombre']:<20} | {row['tipo']:<9} | {active}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -240,6 +417,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_payments = subparsers.add_parser("listar-pagos", help="Lista pagos de un periodo.")
     list_payments.add_argument("--periodo", type=validate_period, default=current_period())
+
+    subparsers.add_parser("listar-conceptos", help="Lista conceptos de pago disponibles.")
 
     workers_parser = subparsers.add_parser("listar-trabajadores", help="Lista trabajadores de RRHH.")
     workers_parser.set_defaults(command="listar-trabajadores")
@@ -284,6 +463,10 @@ def main() -> None:
 
         if args.command == "listar-pagos":
             print_payments(fetch_payments(connection, args.periodo), args.periodo)
+            return
+
+        if args.command == "listar-conceptos":
+            print_payment_concepts(fetch_payment_concepts(connection))
             return
 
         if args.command == "listar-trabajadores":

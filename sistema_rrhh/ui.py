@@ -47,6 +47,9 @@ class RRHHUI(tk.Tk):
         ttk.Button(quick_actions, text="Listar pagos", command=self.show_payments).grid(
             row=4, column=0, sticky="ew", padx=8, pady=(4, 8)
         )
+        ttk.Button(quick_actions, text="Listar conceptos", command=self.show_concepts).grid(
+            row=5, column=0, sticky="ew", padx=8, pady=(0, 8)
+        )
 
         filters = ttk.LabelFrame(controls, text="Periodo de trabajo")
         filters.grid(row=0, column=1, sticky="ew")
@@ -56,7 +59,7 @@ class RRHHUI(tk.Tk):
         ttk.Entry(filters, textvariable=self.period_var).grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(8, 4))
         ttk.Label(
             filters,
-            text="RRHH maneja pagos del mes actual y espera que la integracion ajuste el bono antes del cierre.",
+            text="RRHH maneja pagos del mes actual y calcula el total con los conceptos registrados en cada pago.",
             wraplength=420,
             justify="left",
         ).grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 8))
@@ -190,9 +193,10 @@ class RRHHUI(tk.Tk):
                 "nombre": row["nombre"],
                 "periodo": row["periodo"],
                 "fecha_pago": row["fecha_pago"],
-                "sueldo_base": f"{row['sueldo_base']:.2f}",
-                "bono_extra": f"{row['bono_extra']:.2f}",
-                "pago_final": f"{row['pago_final']:.2f}",
+                "cantidad_conceptos": row["cantidad_conceptos"],
+                "total_ingresos": f"{row['total_ingresos']:.2f}",
+                "total_descuentos": f"{row['total_descuentos']:.2f}",
+                "pago_neto": f"{row['pago_neto']:.2f}",
                 "estado": row["estado"],
             }
             for row in rows
@@ -204,10 +208,40 @@ class RRHHUI(tk.Tk):
                 ("nombre", "Nombre"),
                 ("periodo", "Periodo"),
                 ("fecha_pago", "Fecha pago"),
-                ("sueldo_base", "Base"),
-                ("bono_extra", "Bono"),
-                ("pago_final", "Final"),
+                ("cantidad_conceptos", "Conceptos"),
+                ("total_ingresos", "Ingresos"),
+                ("total_descuentos", "Descuentos"),
+                ("pago_neto", "Neto"),
                 ("estado", "Estado"),
+            ],
+            data,
+        )
+
+    def show_concepts(self) -> None:
+        try:
+            with backend.connect() as connection:
+                backend.create_schema(connection)
+                rows = backend.fetch_payment_concepts(connection)
+        except Exception as exc:
+            self._show_error(f"No se pudieron obtener los conceptos: {exc}")
+            return
+
+        data = [
+            {
+                "codigo": row["codigo"],
+                "nombre": row["nombre"],
+                "tipo": row["tipo"],
+                "activo": "Si" if row["activo"] else "No",
+            }
+            for row in rows
+        ]
+        self._show_table(
+            "Conceptos de pago",
+            [
+                ("codigo", "Codigo"),
+                ("nombre", "Nombre"),
+                ("tipo", "Tipo"),
+                ("activo", "Activo"),
             ],
             data,
         )

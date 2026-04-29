@@ -18,6 +18,8 @@ VENTAS_DB, RRHH_DB = database_paths()
 TARGET_AREA = "Caja"
 VENTAS_THRESHOLD = 10000.00
 BONUS_AMOUNT = 500.00
+BONUS_CONCEPT_CODE = "BONO_EXTRA"
+BONUS_CONCEPT_NAME = "Bono extra"
 SALES_WINDOW_START_DAY = 15
 SALES_CUTOFF_DAY = 14
 EXECUTION_DAY = 15
@@ -44,6 +46,7 @@ def connect_database(path: Path) -> Connection:
 
     connection = connect(path)
     connection.row_factory = Row
+    connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
@@ -83,14 +86,31 @@ def get_payments_by_employee(
     placeholders = ", ".join("?" for _ in employee_codes)
     rows = hr_connection.execute(
         f"""
-        SELECT trabajador_codigo, sueldo_base, bono_extra, pago_final, estado
-        FROM pagos
-        WHERE periodo = ?
-          AND trabajador_codigo IN ({placeholders})
+        SELECT
+            p.id,
+            p.trabajador_codigo,
+            p.estado,
+            COALESCE(pc.monto, 0) AS bonus_amount
+        FROM pagos p
+        LEFT JOIN pago_conceptos pc
+            ON pc.pago_id = p.id
+           AND pc.concepto_codigo = ?
+        WHERE p.periodo = ?
+          AND p.trabajador_codigo IN ({placeholders})
         """,
-        [period_date, *employee_codes],
+        [BONUS_CONCEPT_CODE, period_date, *employee_codes],
     ).fetchall()
     return {row["trabajador_codigo"]: row for row in rows}
+
+
+def ensure_bonus_concept(hr_connection: Connection) -> None:
+    hr_connection.execute(
+        """
+        INSERT OR IGNORE INTO conceptos_pago (codigo, nombre, tipo, activo)
+        VALUES (?, ?, 'ingreso', 1)
+        """,
+        (BONUS_CONCEPT_CODE, BONUS_CONCEPT_NAME),
+    )
 
 
 def apply_bonus(
@@ -109,6 +129,7 @@ def apply_bonus(
 
     hr_connection.execute("BEGIN")
     try:
+        ensure_bonus_concept(hr_connection)
         payments_by_employee = get_payments_by_employee(hr_connection, period_date, employee_codes)
 
         for worker in eligible_workers:
@@ -125,30 +146,31 @@ def apply_bonus(
                     f"{worker['codigo_empleado']} en el periodo {period}."
                 )
 
-            expected_final = round(payment["sueldo_base"] + expected_bonus, 2)
-            if (
-                round(payment["bono_extra"], 2) == expected_bonus
-                and round(payment["pago_final"], 2) == expected_final
-            ):
+            if round(payment["bonus_amount"], 2) == expected_bonus:
                 continue
 
             update_cursor = hr_connection.execute(
                 """
-                UPDATE pagos
-                SET
-                    bono_extra = ?,
-                    pago_final = ?
-                WHERE trabajador_codigo = ?
-                  AND periodo = ?
-                  AND estado = 'pendiente'
+                UPDATE pago_conceptos
+                SET monto = ?
+                WHERE pago_id = ?
+                  AND concepto_codigo = ?
                 """,
-                (expected_bonus, expected_final, worker["codigo_empleado"], period_date),
+                (expected_bonus, payment["id"], BONUS_CONCEPT_CODE),
             )
-            if update_cursor.rowcount != 1:
-                raise RuntimeError(
-                    "No se pudo actualizar el pago de RRHH para "
-                    f"{worker['codigo_empleado']} en el periodo {period}."
+            if update_cursor.rowcount == 0:
+                insert_cursor = hr_connection.execute(
+                    """
+                    INSERT INTO pago_conceptos (pago_id, concepto_codigo, monto)
+                    VALUES (?, ?, ?)
+                    """,
+                    (payment["id"], BONUS_CONCEPT_CODE, expected_bonus),
                 )
+                if insert_cursor.rowcount != 1:
+                    raise RuntimeError(
+                        "No se pudo actualizar el pago de RRHH para "
+                        f"{worker['codigo_empleado']} en el periodo {period}."
+                    )
 
             updated_codes.add(worker["codigo_empleado"])
 
