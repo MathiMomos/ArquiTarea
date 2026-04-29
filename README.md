@@ -225,3 +225,4 @@ python integracion/aplicar_bonos.py
 9. La integracion sigue siendo externa y batch: el unico punto de cruce es `integracion/aplicar_bonos.py`.
 10. `build_exes.py` empaqueta los dos monolitos como aplicaciones de escritorio separadas para el sistema operativo donde se ejecute el build.
 11. Para abrir las interfaces con Python en Linux, normalmente hace falta tener instalado `tkinter` desde el paquete del sistema, por ejemplo `python3-tk`.
+12. En Ubuntu o Debian, si aparece el error `No module named tkinter`, instalalo con `sudo apt update && sudo apt install python3-tk`.

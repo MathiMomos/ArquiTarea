@@ -1,6 +1,14 @@
 from datetime import datetime
-import tkinter as tk
-from tkinter import messagebox, ttk
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+except ModuleNotFoundError as exc:
+    if exc.name != "tkinter":
+        raise
+    raise SystemExit(
+        "Tkinter no esta instalado. En Ubuntu/Debian instala el paquete del sistema con: sudo apt install python3-tk"
+    ) from exc
 
 try:
     from . import aplicar_bonos as backend
