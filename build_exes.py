@@ -15,6 +15,11 @@ APPS = (
 )
 
 
+def built_app_path(name: str) -> Path:
+    suffix = ".exe" if sys.platform.startswith("win") else ""
+    return DIST_DIR / f"{name}{suffix}"
+
+
 def build_app(entrypoint: str, name: str) -> None:
     command = [
         sys.executable,
@@ -55,13 +60,13 @@ def main() -> None:
     SPEC_DIR.mkdir(parents=True, exist_ok=True)
 
     for entrypoint, name, source_db, target_db in APPS:
-        print(f"Generando {name}.exe...")
+        print(f"Generando {built_app_path(name).name}...")
         build_app(entrypoint, name)
         copy_database(source_db, target_db)
 
     print("Build finalizado.")
     for _, name, _, _ in APPS:
-        print(DIST_DIR / f"{name}.exe")
+        print(built_app_path(name))
 
 
 if __name__ == "__main__":

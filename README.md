@@ -4,7 +4,7 @@ Este proyecto arma un caso simple de integracion entre dos sistemas que no se pu
 
 Cada sistema funciona como un monolito aislado: tiene su propia base local, su propia logica y ahora tambien su propia interfaz de escritorio.
 
-Tambien se pueden empaquetar como ejecutables independientes de Windows para abrirlos con doble clic.
+Tambien se pueden empaquetar como binarios de escritorio independientes. En Windows se generan `.exe` y en Linux se genera un binario nativo con el mismo nombre.
 
 1. `sistema_ventas` guarda las ventas de los trabajadores en `SQLite`.
 2. `sistema_rrhh` guarda los pagos de los trabajadores en otra base `SQLite`.
@@ -184,20 +184,22 @@ Abrir interfaz de RRHH:
 python sistema_rrhh/app.py ui
 ```
 
-Generar ejecutables `.exe`:
+Generar binarios de escritorio:
 
 ```bash
 python build_exes.py
 ```
 
-Ejecutables generados:
+Binarios generados:
 
 ```text
-dist/SistemaVentas.exe
-dist/SistemaRRHH.exe
+Windows: dist/SistemaVentas.exe
+Windows: dist/SistemaRRHH.exe
+Linux:   dist/SistemaVentas
+Linux:   dist/SistemaRRHH
 ```
 
-Al ejecutarse empaquetados, cada aplicacion usa su base SQLite junto al `.exe`:
+Al ejecutarse empaquetados, cada aplicacion usa su base SQLite junto al binario generado:
 
 ```text
 dist/ventas.db
@@ -218,7 +220,8 @@ python integracion/aplicar_bonos.py
 4. RRHH muestra el monto final a pagar; el detalle especifico del bono se consulta desde `integracion/bonos_ui.py`.
 5. `aplicar_bonos.py` no pide argumentos. Usa la fecha actual del sistema para calcular el periodo a procesar.
 6. Si se quiere forzar otro periodo, se puede usar `integracion/bonos_ui.py` y ejecutar la integracion para el mes deseado.
-7. La idea es programar el script en `Task Scheduler` para el dia 15 a las 03:00 AM.
+7. La idea es programar el script en `Task Scheduler` en Windows o con `cron`/`systemd timer` en Linux para el dia 15 a las 03:00 AM.
 8. Las interfaces de `ventas` y `RRHH` son independientes; ninguna llama directamente a la otra.
 9. La integracion sigue siendo externa y batch: el unico punto de cruce es `integracion/aplicar_bonos.py`.
-10. `build_exes.py` empaqueta los dos monolitos como aplicaciones de escritorio separadas para Windows.
+10. `build_exes.py` empaqueta los dos monolitos como aplicaciones de escritorio separadas para el sistema operativo donde se ejecute el build.
+11. Para abrir las interfaces con Python en Linux, normalmente hace falta tener instalado `tkinter` desde el paquete del sistema, por ejemplo `python3-tk`.
