@@ -1,0 +1,7 @@
+build_exes
+integracion
+main
+rrhh_desktop
+sistema_rrhh
+sistema_ventas
+ventas_desktop

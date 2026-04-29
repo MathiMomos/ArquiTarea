@@ -141,6 +141,42 @@ def create_payment_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_pago_conceptos_concepto
         ON pago_conceptos(concepto_codigo);
+
+        DROP VIEW IF EXISTS vw_detalle_pagos;
+        CREATE VIEW vw_detalle_pagos AS
+        SELECT
+            p.id AS pago_id,
+            p.trabajador_codigo,
+            t.nombre AS trabajador_nombre,
+            p.periodo,
+            p.fecha_pago,
+            p.estado,
+            c.codigo AS concepto_codigo,
+            c.nombre AS concepto_nombre,
+            c.tipo AS concepto_tipo,
+            pc.monto
+        FROM pagos p
+        INNER JOIN trabajadores t ON t.codigo_empleado = p.trabajador_codigo
+        INNER JOIN pago_conceptos pc ON pc.pago_id = p.id
+        INNER JOIN conceptos_pago c ON c.codigo = pc.concepto_codigo;
+
+        DROP VIEW IF EXISTS vw_resumen_pagos;
+        CREATE VIEW vw_resumen_pagos AS
+        SELECT
+            p.id AS pago_id,
+            p.trabajador_codigo,
+            t.nombre AS trabajador_nombre,
+            p.periodo,
+            p.fecha_pago,
+            p.estado,
+            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE 0 END), 0), 2) AS total_ingresos,
+            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'descuento' THEN pc.monto ELSE 0 END), 0), 2) AS total_descuentos,
+            ROUND(COALESCE(SUM(CASE WHEN c.tipo = 'ingreso' THEN pc.monto ELSE -pc.monto END), 0), 2) AS monto_pagar
+        FROM pagos p
+        INNER JOIN trabajadores t ON t.codigo_empleado = p.trabajador_codigo
+        LEFT JOIN pago_conceptos pc ON pc.pago_id = p.id
+        LEFT JOIN conceptos_pago c ON c.codigo = pc.concepto_codigo
+        GROUP BY p.id, p.trabajador_codigo, t.nombre, p.periodo, p.fecha_pago, p.estado;
         """
     )
 

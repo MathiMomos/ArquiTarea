@@ -2,7 +2,7 @@ import argparse
 import calendar
 import sqlite3
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 
@@ -22,10 +22,10 @@ DEMO_TRABAJADORES = (
 )
 
 DEMO_VENTAS = {
-    "E001": ((5, 4200.00), (12, 3900.00), (14, 4400.00)),
-    "E002": ((7, 2800.00), (15, 2500.00), (22, 3000.00)),
-    "E003": ((2, 6100.00), (8, 5400.00), (14, 6200.00)),
-    "E004": ((10, 4000.00), (17, 3500.00), (25, 2500.00)),
+    "E001": ((5, 9, 15, 4200.00), (12, 13, 10, 3900.00), (14, 21, 30, 4400.00)),
+    "E002": ((7, 10, 0, 2800.00), (15, 11, 20, 2500.00), (22, 16, 40, 3000.00)),
+    "E003": ((2, 8, 50, 6100.00), (8, 14, 5, 5400.00), (14, 20, 45, 6200.00)),
+    "E004": ((10, 9, 15, 4000.00), (17, 15, 30, 3500.00), (25, 18, 0, 2500.00)),
 }
 
 
@@ -44,11 +44,36 @@ def validate_period(period: str) -> str:
     return period
 
 
-def day_in_period(period: str, day: int) -> str:
+def sale_timestamp_in_period(period: str, day: int, hour: int, minute: int) -> str:
     year, month = map(int, period.split("-"))
     last_day = calendar.monthrange(year, month)[1]
     safe_day = min(day, last_day)
-    return date(year, month, safe_day).isoformat()
+    return datetime(year, month, safe_day, hour, minute).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def normalize_sale_timestamp(value: str) -> str:
+    raw_value = value.strip()
+    try:
+        parsed = datetime.fromisoformat(raw_value)
+    except ValueError:
+        parsed = datetime.combine(date.fromisoformat(raw_value), time())
+    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def normalize_sale_timestamps(connection: sqlite3.Connection) -> None:
+    legacy_rows = connection.execute(
+        """
+        SELECT id, fecha
+        FROM ventas
+        WHERE length(fecha) = 10
+        """
+    ).fetchall()
+
+    for row in legacy_rows:
+        connection.execute(
+            "UPDATE ventas SET fecha = ? WHERE id = ?",
+            (normalize_sale_timestamp(row["fecha"]), row["id"]),
+        )
 
 
 def connect() -> sqlite3.Connection:
@@ -80,6 +105,7 @@ def create_schema(connection: sqlite3.Connection) -> None:
         ON ventas(trabajador_codigo, fecha);
         """
     )
+    normalize_sale_timestamps(connection)
     connection.commit()
 
 
@@ -107,10 +133,10 @@ def insert_demo_data(connection: sqlite3.Connection, period: str) -> int:
 
     inserted = 0
     for worker_code, sales in DEMO_VENTAS.items():
-        for day, amount in sales:
+        for day, hour, minute, amount in sales:
             connection.execute(
                 "INSERT INTO ventas (trabajador_codigo, fecha, monto) VALUES (?, ?, ?)",
-                (worker_code, day_in_period(period, day), amount),
+                (worker_code, sale_timestamp_in_period(period, day, hour, minute), amount),
             )
             inserted += 1
 
@@ -129,7 +155,7 @@ def register_sale(connection: sqlite3.Connection, worker_code: str, sale_date: s
 
     connection.execute(
         "INSERT INTO ventas (trabajador_codigo, fecha, monto) VALUES (?, ?, ?)",
-        (worker_code, sale_date, amount),
+        (worker_code, normalize_sale_timestamp(sale_date), amount),
     )
     connection.commit()
 
@@ -193,12 +219,12 @@ def print_sales(rows: list[sqlite3.Row], period: str) -> None:
         return
 
     print(f"Ventas del periodo {period}")
-    print("id | codigo | nombre        | fecha       | monto")
-    print("---+--------+---------------+-------------+----------")
+    print("id | codigo | nombre        | fecha y hora        | monto")
+    print("---+--------+---------------+---------------------+----------")
     for row in rows:
         print(
             f"{row['id']:<2} | {row['trabajador_codigo']:<6} | {row['nombre']:<13} | "
-            f"{row['fecha']:<11} | {row['monto']:>8.2f}"
+            f"{row['fecha']:<19} | {row['monto']:>8.2f}"
         )
 
 

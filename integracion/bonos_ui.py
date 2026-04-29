@@ -42,7 +42,7 @@ class BonusQueryUI(tk.Tk):
         self.query_period_var = tk.StringVar()
         self.status_var = tk.StringVar(value=f"Origen ventas: {backend.VENTAS_DB} | Destino RRHH: {backend.RRHH_DB}")
         self.table_title_var = tk.StringVar(value="Consola externa de integracion")
-        self.view_note_var = tk.StringVar(value="Ejecuta la integracion o consulta los bonos aplicados sin abrir RRHH.")
+        self.view_note_var = tk.StringVar(value="Primero prepara el concepto externo y luego ejecuta la integracion o consulta los bonos aplicados.")
         self.selection_var = tk.StringVar(value="Selecciona un registro para ver el detalle rapido.")
         self.metric_vars = {
             "periodo": tk.StringVar(value="-"),
@@ -124,16 +124,21 @@ class BonusQueryUI(tk.Tk):
 
         ttk.Label(execution, text="Periodo a procesar (YYYY-MM)").grid(row=0, column=0, sticky="w")
         ttk.Entry(execution, textvariable=self.execution_period_var).grid(row=1, column=0, sticky="ew", pady=(4, 10))
-        ttk.Button(execution, text="Ejecutar integracion", command=self.run_integration).grid(row=2, column=0, sticky="ew")
-        ttk.Button(execution, text="Ver bonos del periodo", command=self.show_period_bonuses).grid(
+        ttk.Button(execution, text="Preparar concepto bono", command=self.prepare_bonus_concept).grid(
+            row=2, column=0, sticky="ew"
+        )
+        ttk.Button(execution, text="Ejecutar integracion", command=self.run_integration).grid(
             row=3, column=0, sticky="ew", pady=(6, 0)
+        )
+        ttk.Button(execution, text="Ver bonos del periodo", command=self.show_period_bonuses).grid(
+            row=4, column=0, sticky="ew", pady=(6, 0)
         )
         ttk.Label(
             execution,
-            text="La ejecucion crea el concepto externo cuando hace falta y actualiza solo pagos pendientes.",
+            text="El flujo operativo es preparar el concepto en RRHH y luego aplicar el bono solo a pagos pendientes.",
             wraplength=260,
             justify="left",
-        ).grid(row=4, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=5, column=0, sticky="w", pady=(10, 0))
 
         query = ttk.LabelFrame(parent, text="Consulta por trabajador", style="Section.TLabelframe")
         query.grid(row=1, column=0, sticky="ew", pady=(12, 0))
@@ -292,6 +297,30 @@ class BonusQueryUI(tk.Tk):
                 ("estado", "Resultado"),
             ],
             data,
+        )
+
+    def prepare_bonus_concept(self) -> None:
+        try:
+            with backend.connect_database(backend.RRHH_DB) as connection:
+                backend.register_bonus_concept(connection)
+                connection.commit()
+        except Exception as exc:
+            self._show_error(f"No se pudo preparar el concepto bono: {exc}")
+            return
+
+        period = validate_period(self.execution_period_var.get())
+        self._set_period_context(period)
+        self.metric_vars["resultado"].set("Concepto preparado")
+        self._show_table(
+            "Concepto de bono preparado",
+            "El concepto BONO_EXTRA ya esta disponible en RRHH para que la integracion mensual pueda registrar bonificaciones.",
+            [("paso", "Paso"), ("detalle", "Detalle")],
+            [
+                {
+                    "paso": "Preparacion",
+                    "detalle": "BONO_EXTRA registrado en RRHH y listo para su aplicacion externa.",
+                }
+            ],
         )
 
     def show_period_bonuses(self) -> None:

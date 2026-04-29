@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row, connect
 import sys
@@ -35,8 +35,12 @@ def period_start_date(period: str) -> str:
 def sales_window(period: str) -> tuple[str, str]:
     period_date = date.fromisoformat(period_start_date(period))
     previous_month_last_day = period_date - timedelta(days=1)
-    sales_start = previous_month_last_day.replace(day=SALES_WINDOW_START_DAY).isoformat()
-    sales_cutoff = period_date.replace(day=SALES_CUTOFF_DAY).isoformat()
+    sales_start = datetime.combine(previous_month_last_day.replace(day=SALES_WINDOW_START_DAY), time()).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    sales_cutoff = datetime.combine(period_date.replace(day=SALES_CUTOFF_DAY), time(22, 0, 0)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
     return sales_start, sales_cutoff
 
 
@@ -48,6 +52,14 @@ def connect_database(path: Path) -> Connection:
     connection.row_factory = Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+def bonus_concept_exists(hr_connection: Connection) -> bool:
+    row = hr_connection.execute(
+        "SELECT 1 FROM conceptos_pago WHERE codigo = ?",
+        (BONUS_CONCEPT_CODE,),
+    ).fetchone()
+    return row is not None
 
 
 def get_eligible_workers(
@@ -103,13 +115,23 @@ def get_payments_by_employee(
     return {row["trabajador_codigo"]: row for row in rows}
 
 
-def ensure_bonus_concept(hr_connection: Connection) -> None:
+def register_bonus_concept(hr_connection: Connection) -> None:
     hr_connection.execute(
         """
         INSERT OR IGNORE INTO conceptos_pago (codigo, nombre, tipo, activo)
         VALUES (?, ?, 'ingreso', 1)
         """,
         (BONUS_CONCEPT_CODE, BONUS_CONCEPT_NAME),
+    )
+
+
+def require_bonus_concept(hr_connection: Connection) -> None:
+    if bonus_concept_exists(hr_connection):
+        return
+
+    raise RuntimeError(
+        "El concepto BONO_EXTRA no existe en RRHH. "
+        "Ejecuta primero integracion/preparar_concepto_bono.py."
     )
 
 
@@ -195,7 +217,7 @@ def apply_bonus(
 
     hr_connection.execute("BEGIN")
     try:
-        ensure_bonus_concept(hr_connection)
+        require_bonus_concept(hr_connection)
         payments_by_employee = get_payments_by_employee(hr_connection, period_date, employee_codes)
 
         for worker in eligible_workers:

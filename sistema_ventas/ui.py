@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -23,7 +23,7 @@ class VentasUI(tk.Tk):
 
         self.period_var = tk.StringVar(value=backend.previous_month_period())
         self.code_var = tk.StringVar()
-        self.sale_date_var = tk.StringVar(value=date.today().isoformat())
+        self.sale_date_var = tk.StringVar(value=datetime.now().replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S"))
         self.amount_var = tk.StringVar()
         self.status_var = tk.StringVar(value=f"Base local: {backend.DB_PATH}")
         self.table_title_var = tk.StringVar(value="Panel operativo de ventas")
@@ -115,7 +115,7 @@ class VentasUI(tk.Tk):
         self.worker_combo = ttk.Combobox(operations, textvariable=self.code_var, state="normal")
         self.worker_combo.grid(row=1, column=0, sticky="ew", pady=(4, 10))
 
-        ttk.Label(operations, text="Fecha de venta").grid(row=2, column=0, sticky="w")
+        ttk.Label(operations, text="Fecha y hora").grid(row=2, column=0, sticky="w")
         ttk.Entry(operations, textvariable=self.sale_date_var).grid(row=3, column=0, sticky="ew", pady=(4, 10))
 
         ttk.Label(operations, text="Monto").grid(row=4, column=0, sticky="w")
@@ -124,7 +124,7 @@ class VentasUI(tk.Tk):
         ttk.Button(operations, text="Registrar venta", command=self.register_sale).grid(row=6, column=0, sticky="ew")
         ttk.Label(
             operations,
-            text="Usa el codigo del trabajador y la fecha real del comprobante.",
+            text="Usa el codigo del trabajador y la fecha real del comprobante con formato YYYY-MM-DD HH:MM:SS.",
             wraplength=250,
             justify="left",
         ).grid(row=7, column=0, sticky="w", pady=(10, 0))
@@ -429,7 +429,6 @@ class VentasUI(tk.Tk):
                 raise ValueError("Ingresa un codigo de trabajador.")
             if amount < 0:
                 raise ValueError("El monto no puede ser negativo.")
-            date.fromisoformat(sale_date)
             with backend.connect() as connection:
                 backend.create_schema(connection)
                 backend.register_sale(connection, worker_code, sale_date, amount)
